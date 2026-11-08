@@ -1,6 +1,7 @@
 use std::{fmt, fs};
 use tracing_subscriber::field::RecordFields;
 use tracing_subscriber::fmt::format::{DefaultFields, FormatFields, Writer};
+pub(crate) mod operation;
 pub mod recent;
 
 use anyhow::Result;
@@ -49,6 +50,16 @@ impl<'writer> FormatFields<'writer> for BuildFields {
             std::process::id(),
             self.run_id
         )?;
+        if let Some(operation) = operation::current() {
+            write!(
+                writer,
+                "operation_id={} source={} command={} ",
+                operation.id, operation.source, operation.command
+            )?;
+        }
+        if let Ok(stage) = operation::STAGE.try_with(|stage| *stage) {
+            write!(writer, "stage={stage} ")?;
+        }
         DefaultFields::new().format_fields(writer, fields)
     }
 }
@@ -144,5 +155,46 @@ mod build_tests {
         assert_eq!(lines[1].split_whitespace().nth(1), Some("WARN"));
         assert!(lines[1].contains("interface=\"wan0\""));
         assert_ne!(BuildFields::new().run_id, run);
+    }
+    #[tokio::test]
+    async fn operation_fields_and_stage_are_present_after_async_yields() {
+        use tracing::instrument::WithSubscriber;
+        let output = Output::default();
+        let sink = output.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .fmt_fields(BuildFields::new())
+            .with_writer(move || sink.clone())
+            .finish();
+        let operation = operation::Operation::new("api", "deactivate_wifi_client_profile");
+        let id = operation.id.clone();
+        operation
+            .scope(async {
+                operation::stage(
+                    "wait_dhcp",
+                    Some(std::time::Duration::from_secs(17)),
+                    async {
+                        tokio::task::yield_now().await;
+                        Err::<(), _>(
+                            anyhow::Error::new(std::io::Error::from_raw_os_error(100))
+                                .context("send failed"),
+                        )
+                    },
+                )
+                .await
+                .unwrap_err();
+            })
+            .with_subscriber(subscriber)
+            .await;
+        let text = String::from_utf8(output.0.lock().unwrap().clone()).unwrap();
+        for line in text.lines() {
+            assert!(line.contains(&format!("operation_id={id}")), "{line}");
+            assert!(line.contains("source=api"));
+            assert!(line.contains("command=deactivate_wifi_client_profile"));
+            assert!(line.contains("stage=wait_dhcp"));
+        }
+        assert!(text.contains("errno=100"));
+        assert!(text.contains("budget_ms=17000"));
+        assert!(text.contains("elapsed_ms="));
     }
 }
