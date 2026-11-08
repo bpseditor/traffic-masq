@@ -347,3 +347,26 @@ fn hostname_is_retained_through_acquisition_renewal_and_rebinding() {
         );
     }
 }
+
+#[test]
+fn rejected_reply_retains_validation_reason_and_exchange_identity() {
+    let mut sm = DhcpClientStateMachine::new(MAC);
+    sm.link_ready(Duration::ZERO, XID, None, 0);
+    sm.receive(
+        Duration::ZERO,
+        &reply(XID, DhcpMessageType::Offer, ADDRESS, None),
+        0,
+    );
+    let actions = sm.receive(
+        Duration::ZERO,
+        &reply(XID + 1, DhcpMessageType::Ack, ADDRESS, Some(80)),
+        0,
+    );
+    let Action::ReplyIgnored(IgnoreReason::Invalid(reason)) = &actions[0] else {
+        panic!("{actions:?}");
+    };
+    assert!(reason.contains("transaction ID does not match"));
+    assert!(reason.contains(&format!("expected_xid={XID}")));
+    assert!(reason.contains("received_type=Some(Ack)"));
+    assert_eq!(sm.state_name(), "requesting");
+}

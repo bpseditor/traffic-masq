@@ -782,6 +782,8 @@ pub struct DhcpClientActor<T, D, S> {
     state_machine: DhcpClientStateMachine,
     epoch: Instant,
     remembered: Option<Lease>,
+    rejected_replies: u64,
+    rejection_log_at: Instant,
 }
 
 impl<T, D, S> DhcpClientActor<T, D, S>
@@ -806,6 +808,8 @@ where
             sink,
             epoch: Instant::now(),
             remembered: None,
+            rejected_replies: 0,
+            rejection_log_at: Instant::now(),
         })
     }
 
@@ -846,7 +850,17 @@ where
                         tracing::debug!(received_ifindex = datagram.interface_index, expected_ifindex = self.config.interface_index, "ignoring DHCP reply from wrong interface");
                         continue;
                     }
+                    let previous_state = self.state_machine.state_name();
+                    if let Ok(packet) = crate::dhcp::packet::DhcpPacket::parse(&datagram.bytes) {
+                        tracing::debug!(interface = %self.config.interface, received_xid = packet.xid,
+                            expected_xid = self.state_machine.xid(), message_type = ?packet.message_type(), server = ?packet.server_identifier(),
+                            state = previous_state, "DHCP packet received");
+                    }
                     let actions = self.state_machine.receive(self.now(), &datagram.bytes, random_jitter());
+                    if previous_state != self.state_machine.state_name() {
+                        tracing::info!(interface = %self.config.interface, from = previous_state,
+                            to = self.state_machine.state_name(), reason = "reply_received", "DHCP exchange state changed");
+                    }
                     if self.drive_or_cancel(actions, &mut cancel).await?.is_none() {
                         return Ok(());
                     }
@@ -888,15 +902,20 @@ where
             match action {
                 Action::Send { packet, kind } => {
                     self.transport.send(&packet, kind).await?;
-                    let message_type = crate::dhcp::packet::DhcpPacket::parse(&packet)
-                        .ok()
-                        .and_then(|packet| packet.message_type());
-                    tracing::info!(interface = %self.config.interface, ?message_type, ?kind, "DHCP packet sent");
+                    let parsed = crate::dhcp::packet::DhcpPacket::parse(&packet).ok();
+                    let message_type = parsed.as_ref().and_then(|packet| packet.message_type());
+                    tracing::info!(interface = %self.config.interface, ?message_type, ?kind,
+                        xid = parsed.as_ref().map(|packet| packet.xid), state = self.state_machine.state_name(), "DHCP packet sent");
                 }
                 Action::WakeAt(deadline) => {
                     wake = Some(wake.map_or(deadline, |old: Duration| old.min(deadline)))
                 }
                 Action::LeaseAcquired(lease) => {
+                    if self.rejected_replies > 0 {
+                        tracing::info!(interface = %self.config.interface, rejected_replies = self.rejected_replies,
+                            "DHCP exchange recovered after rejected replies");
+                        self.rejected_replies = 0;
+                    }
                     tracing::info!(interface = %self.config.interface, address = %lease.address, server = %lease.server_identifier, "DHCP ACK accepted; probing for duplicate address");
                     if self
                         .dad
@@ -922,7 +941,18 @@ where
                 Action::LeaseLost => self.sink.lease_lost().await?,
                 Action::CleanupNeeded(lease) => self.sink.cleanup_needed(lease).await?,
                 Action::ReplyIgnored(super::state_machine::IgnoreReason::Invalid(reason)) => {
-                    tracing::warn!(interface = %self.config.interface, %reason, "DHCP reply rejected");
+                    self.rejected_replies = self.rejected_replies.saturating_add(1);
+                    if self.rejected_replies <= 3
+                        || self.rejection_log_at.elapsed() >= Duration::from_secs(30)
+                    {
+                        self.rejection_log_at = Instant::now();
+                        tracing::warn!(interface = %self.config.interface, state = self.state_machine.state_name(),
+                            expected_xid = self.state_machine.xid(), rejected_replies = self.rejected_replies,
+                            %reason, "DHCP reply rejected");
+                    } else {
+                        tracing::debug!(interface = %self.config.interface, state = self.state_machine.state_name(),
+                            rejected_replies = self.rejected_replies, %reason, "DHCP repeated reply rejection");
+                    }
                 }
                 Action::ReplyIgnored(reason) => {
                     tracing::debug!(interface = %self.config.interface, ?reason, "DHCP reply ignored");

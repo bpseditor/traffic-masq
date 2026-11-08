@@ -187,50 +187,59 @@ impl DhcpClientStateMachine {
                 }
                 Err(error) => ignored(error),
             },
-            DhcpClientState::Requesting { offer } => {
-                if let Ok(ack) = context.validate_ack(
-                    &packet,
-                    Some(offer.server_identifier),
-                    Some(offer.address),
-                ) {
-                    return self.bind(ack, now);
-                }
-                if context
-                    .validate_nak(&packet, Some(offer.server_identifier))
-                    .is_ok()
-                {
-                    return self.nak(now, jitter_ms);
-                }
-                ignored("reply is not a valid ACK or NAK for the selected offer")
-            }
-            DhcpClientState::Rebooting { lease } => {
-                if let Ok(ack) = context.validate_ack(&packet, None, Some(lease.address)) {
-                    return self.bind(ack, now);
-                }
-                if context.validate_nak(&packet, None).is_ok() {
-                    return self.nak(now, jitter_ms);
-                }
-                ignored("reply is not a valid INIT-REBOOT ACK or NAK")
-            }
-            DhcpClientState::Renewing { lease } => {
-                if let Ok(ack) = context.validate_ack(&packet, None, Some(lease.address)) {
-                    return self.bind(ack, now);
-                }
-                if context.validate_nak(&packet, None).is_ok() {
-                    return self.nak(now, jitter_ms);
-                }
-                ignored("reply is not a valid renewal ACK or NAK")
-            }
-            DhcpClientState::Rebinding { lease } => {
-                if let Ok(ack) = context.validate_ack(&packet, None, Some(lease.address)) {
-                    return self.bind(ack, now);
-                }
-                if context.validate_nak(&packet, None).is_ok() {
-                    return self.nak(now, jitter_ms);
-                }
-                ignored("reply is not a valid rebinding ACK or NAK")
+            DhcpClientState::Requesting { offer } => self.receive_ack_or_nak(
+                now,
+                &packet,
+                context,
+                Some(offer.server_identifier),
+                Some(offer.address),
+                jitter_ms,
+            ),
+            DhcpClientState::Rebooting { lease }
+            | DhcpClientState::Renewing { lease }
+            | DhcpClientState::Rebinding { lease } => {
+                self.receive_ack_or_nak(now, &packet, context, None, Some(lease.address), jitter_ms)
             }
             _ => vec![Action::ReplyIgnored(IgnoreReason::NotExpected)],
+        }
+    }
+
+    fn receive_ack_or_nak(
+        &mut self,
+        now: MonotonicTime,
+        packet: &DhcpPacket<'_>,
+        context: ReplyContext,
+        server: Option<Ipv4Addr>,
+        address: Option<Ipv4Addr>,
+        jitter_ms: i32,
+    ) -> Vec<Action> {
+        let ack_error = match context.validate_ack(packet, server, address) {
+            Ok(ack) => return self.bind(ack, now),
+            Err(error) => error,
+        };
+        let nak_error = match context.validate_nak(packet, server) {
+            Ok(_) => return self.nak(now, jitter_ms),
+            Err(error) => error,
+        };
+        ignored(format!("ACK rejected: {ack_error:#}; NAK rejected: {nak_error:#}; received_type={:?} received_xid={} expected_xid={}",
+            packet.message_type(), packet.xid, context.xid))
+    }
+
+    /// Stable state label without lease contents or untrusted diagnostic text.
+    pub fn state_name(&self) -> &'static str {
+        match self.state {
+            DhcpClientState::WaitingForLink => "waiting_for_link",
+            DhcpClientState::Init => "init",
+            DhcpClientState::InitReboot { .. } => "init_reboot",
+            DhcpClientState::Selecting => "selecting",
+            DhcpClientState::Requesting { .. } => "requesting",
+            DhcpClientState::Rebooting { .. } => "rebooting",
+            DhcpClientState::Bound { .. } => "bound",
+            DhcpClientState::Renewing { .. } => "renewing",
+            DhcpClientState::Rebinding { .. } => "rebinding",
+            DhcpClientState::Declining { .. } => "declining",
+            DhcpClientState::Backoff => "backoff",
+            DhcpClientState::Failed { .. } => "failed",
         }
     }
 
