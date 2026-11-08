@@ -1,3 +1,7 @@
+/// Association may include a full scan and authentication retries.
+pub(crate) const ASSOCIATION_READY_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
 pub mod ctrl;
 pub mod profile;
 pub mod render;

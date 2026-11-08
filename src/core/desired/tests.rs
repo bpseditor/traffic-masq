@@ -290,3 +290,19 @@ async fn effective_read_does_not_mix_old_overrides_with_a_withdrawn_proposal() {
     drop(tentative);
     assert_eq!(reader.await.unwrap().network.interfaces["lan0"], candidate);
 }
+
+#[tokio::test]
+async fn transaction_operation_identity_survives_background_convergence() {
+    let (state, _dir) = desired_state().await;
+    let operation = crate::logging::operation::Operation::new("api", "apply_interface");
+    operation
+        .scope(state.propose("diagnostic-token", "lan0", interface("10.1.1.1/24"), false))
+        .await;
+    let cloned = state.clone();
+    let captured = tokio::spawn(async move { cloned.operation_for("lan0").await })
+        .await
+        .unwrap();
+    assert_eq!(captured, Some(("diagnostic-token".into(), operation)));
+    state.withdraw("diagnostic-token").await;
+    assert!(state.operation_for("lan0").await.is_none());
+}

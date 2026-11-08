@@ -378,6 +378,11 @@ pub trait NetworkProvider: Send + Sync {
     /// Observe current links; an error must not be interpreted as absence.
     async fn list_interfaces(&self) -> Result<Vec<NetworkInterface>>;
 
+    /// Observe carrier without changing link state. None means unsupported.
+    async fn link_carrier(&self, _interface: &str) -> Result<Option<bool>> {
+        Ok(None)
+    }
+
     /// Observe the device hardware address; unsupported providers return an error.
     async fn hardware_address(&self, _interface: &str) -> Result<Vec<u8>> {
         anyhow::bail!("hardware-address observation is not supported by this network provider")
@@ -517,6 +522,10 @@ where
 
     async fn list_ipv4_addresses(&self, interface: &str) -> Result<Vec<Ipv4AddressInfo>> {
         (**self).list_ipv4_addresses(interface).await
+    }
+
+    async fn link_carrier(&self, interface: &str) -> Result<Option<bool>> {
+        (**self).link_carrier(interface).await
     }
 
     async fn set_link_up(&self, name: &str) -> Result<()> {
@@ -1024,6 +1033,24 @@ impl NetworkProvider for RtnetlinkNetworkProvider {
     async fn list_ipv4_addresses(&self, interface: &str) -> Result<Vec<Ipv4AddressInfo>> {
         let _request = self.request_lock.lock().await;
         self.list_ipv4_addresses_unlocked(interface).await
+    }
+
+    async fn link_carrier(&self, interface: &str) -> Result<Option<bool>> {
+        let _request = self.request_lock.lock().await;
+        let mut links = self
+            .handle
+            .link()
+            .get()
+            .match_name(interface.to_owned())
+            .execute();
+        let link = links
+            .try_next()
+            .await
+            .with_context(|| format!("RTM_GETLINK while reading carrier on {interface}"))?
+            .ok_or_else(|| MissingInterface {
+                interface: interface.to_owned(),
+            })?;
+        Ok(Some(link.header.flags.contains(LinkFlags::LowerUp)))
     }
 
     async fn set_link_up(&self, name: &str) -> Result<()> {

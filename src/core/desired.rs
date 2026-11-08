@@ -24,6 +24,7 @@ use crate::core::override_manager::RuntimeOverrideManager;
 struct TentativeInterface {
     /// The transaction that proposed it, so only its owner can withdraw it.
     token: String,
+    diagnostic: crate::logging::operation::Operation,
     config: InterfaceConfig,
     /// Carried alongside the config because the converger has to be able to
     /// realise the proposal, and a role change it is not allowed to make is
@@ -473,6 +474,9 @@ impl DesiredNetworkState {
             interface.to_string(),
             TentativeInterface {
                 token: token.to_string(),
+                diagnostic: crate::logging::operation::current().unwrap_or_else(|| {
+                    crate::logging::operation::Operation::new("internal", "apply_interface")
+                }),
                 config,
                 allow_management_change,
                 restore: None,
@@ -481,6 +485,17 @@ impl DesiredNetworkState {
         // Bumped after the layer is in place, never before: a converger that
         // reads this version has to be able to see what it stands for.
         self.interface_changed(interface);
+    }
+
+    pub(crate) async fn operation_for(
+        &self,
+        interface: &str,
+    ) -> Option<(String, crate::logging::operation::Operation)> {
+        self.tentative
+            .lock()
+            .await
+            .get(interface)
+            .map(|entry| (entry.token.clone(), entry.diagnostic.clone()))
     }
 
     /// Report whether any proposal or restoration still awaits completion.
@@ -550,10 +565,19 @@ impl DesiredNetworkState {
             wifi: None,
             wifi_client: None,
         });
+        let diagnostic = self
+            .operation_for(&interface)
+            .await
+            .map(|(_, diagnostic)| diagnostic)
+            .or_else(crate::logging::operation::current)
+            .unwrap_or_else(|| {
+                crate::logging::operation::Operation::new("recovery", "restore_interface")
+            });
         self.tentative.lock().await.insert(
             interface.clone(),
             TentativeInterface {
                 token: token.to_owned(),
+                diagnostic,
                 config,
                 allow_management_change: true,
                 restore: Some(snapshot),

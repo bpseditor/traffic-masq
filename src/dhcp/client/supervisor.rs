@@ -189,9 +189,17 @@ impl DhcpClientLauncher for LinuxDhcpClientLauncher {
             actor = actor.with_remembered_lease(lease);
         }
         let (cancel, cancel_rx) = watch::channel(false);
+        let interface = launch.interface.clone();
         Ok(RunningDhcpClient {
             cancel,
-            task: tokio::spawn(actor.run(cancel_rx)),
+            task: tokio::spawn(crate::logging::operation::inherit(async move {
+                let result = actor.run(cancel_rx).await;
+                if let Err(error) = &result {
+                    tracing::warn!(%interface, errno = crate::logging::operation::os_error(error),
+                        error = %format!("{error:#}"), "DHCP actor exited with an error");
+                }
+                result
+            })),
             transport: socket,
         })
     }
@@ -226,6 +234,9 @@ impl ClientTask {
 
     fn state(&self) -> DhcpClientRunState {
         match (&self.running, &self.last_error) {
+            (Some(running), _) if running.task.is_finished() => DhcpClientRunState::Degraded {
+                reason: "DHCP client task has stopped; awaiting its exit result".into(),
+            },
             (Some(_), _) => DhcpClientRunState::Running,
             (None, Some(reason)) => DhcpClientRunState::Degraded {
                 reason: reason.clone(),
@@ -311,6 +322,12 @@ impl DhcpClientSupervisor {
 
     /// Recover persisted DHCP ownership and apply committed clients after router recovery.
     pub async fn reconcile_startup(&self, config: &AppConfig) -> Result<()> {
+        crate::logging::operation::Operation::new("startup", "restore_dhcp_clients")
+            .scope(self.reconcile_startup_with_diagnostics(config))
+            .await
+    }
+
+    async fn reconcile_startup_with_diagnostics(&self, config: &AppConfig) -> Result<()> {
         let specs = Self::effective_specs(config)?;
         self.recover_persisted_leases(&specs).await?;
         for spec in specs {
@@ -541,15 +558,32 @@ impl DhcpClientSupervisor {
     pub(crate) async fn wait_until_ready(&self, interface: &str) -> Result<()> {
         let deadline = Instant::now() + LEASE_READY_TIMEOUT;
         loop {
+            // The liveness worker cannot acquire its mutation gate while this
+            // convergence pass waits. Collect actor failures here, without restart.
+            {
+                let _operation = self.inner.operation_lock.read().await;
+                let _interface_operation = self.inner.interface_operations.lock(interface).await;
+                let finished = self
+                    .inner
+                    .tasks
+                    .lock()
+                    .await
+                    .get(interface)
+                    .and_then(|task| task.running.as_ref())
+                    .is_some_and(|running| running.task.is_finished());
+                if finished {
+                    self.reap_finished(interface).await;
+                }
+            }
             let status = self
                 .status(interface)
                 .await
                 .context("DHCP client disappeared")?;
-            if let Some(lease) = status.lease {
-                return self.verify_bound_lease(&lease).await;
-            }
             if let DhcpClientRunState::Degraded { reason } = status.state {
                 bail!("DHCP client on {interface} is degraded: {reason}");
+            }
+            if let Some(lease) = status.lease {
+                return self.verify_bound_lease(&lease).await;
             }
             if Instant::now() >= deadline {
                 tracing::warn!(%interface, state = ?status.state, timeout_seconds = LEASE_READY_TIMEOUT.as_secs(), "DHCP readiness timed out without a lease; inspect DHCP packet and address-probe events");
@@ -1062,6 +1096,8 @@ impl DhcpClientSupervisor {
         let Some(task) = tasks.get_mut(interface) else {
             return;
         };
+        tracing::warn!(%interface, state = "Degraded", %reason, failures = task.consecutive_failures.saturating_add(1),
+            "DHCP client failure recorded");
         task.running = None;
         task.consecutive_failures = task.consecutive_failures.saturating_add(1);
         task.next_attempt_earliest = Some(Instant::now() + backoff(task.consecutive_failures));

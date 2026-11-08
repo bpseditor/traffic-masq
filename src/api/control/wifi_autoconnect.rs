@@ -80,6 +80,12 @@ impl ControlService {
     }
 
     pub(crate) async fn autoconnect_wifi_once(&self) -> anyhow::Result<()> {
+        crate::logging::operation::Operation::new("autoconnect", "connect_wifi")
+            .scope(self.autoconnect_wifi_with_diagnostics())
+            .await
+    }
+
+    async fn autoconnect_wifi_with_diagnostics(&self) -> anyhow::Result<()> {
         let Some(wifi) = &self.wifi_client else {
             return Ok(());
         };

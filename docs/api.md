@@ -48,7 +48,8 @@ available for automation. Use a client from the same release as the daemon;
 older daemons do not expose `/control`.
 
 Client deadlines follow the command: observations use 10 seconds; writes,
-scans and dry-run plans use 65 seconds. Using POST for reads does not extend
+scans and dry-run plans use 145 seconds, allowing time for Wi-Fi association,
+DHCP acquisition and compensation if applying a change fails. Using POST for reads does not extend
 their deadline. A timeout does not cancel an admitted server operation.
 
 ## Quick start

@@ -1464,3 +1464,29 @@ async fn shutdown_reports_failed_address_cleanup_and_retains_lease_proof() {
     assert!(!network.addresses.lock().await.is_empty());
     assert!(supervisor.inner.tasks.lock().await.is_empty());
 }
+
+#[tokio::test(start_paused = true)]
+async fn readiness_reports_actor_exit_without_waiting_for_liveness_or_timeout() {
+    let state_dir = TempDir::new().unwrap();
+    let launcher = Arc::new(FakeLauncher::default());
+    launcher.exit_immediately.store(1, Ordering::SeqCst);
+    let supervisor =
+        supervisor_with(&state_dir, FakeNetwork::present(7).await, launcher.clone()).await;
+    tokio::task::yield_now().await;
+    assert!(matches!(
+        supervisor.status("wan0").await.unwrap().state,
+        DhcpClientRunState::Degraded { .. }
+    ));
+    let started = Instant::now();
+    let error = supervisor.wait_until_ready("wan0").await.unwrap_err();
+    assert!(
+        error.to_string().contains("injected actor failure"),
+        "{error:#}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(launcher.launches.lock().unwrap().len(), 1);
+    supervisor
+        .shutdown(ShutdownPolicy::RestoreInterfaces)
+        .await
+        .unwrap();
+}

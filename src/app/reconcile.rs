@@ -72,6 +72,9 @@ pub(super) trait DhcpClientRuntimeReconciler: Send + Sync {
     async fn specs(&self) -> Vec<DhcpClientSpec>;
     async fn disable(&self, interface: &str) -> Result<Option<DhcpClientSpec>>;
     async fn reconcile(&self, spec: DhcpClientSpec, link_ready: bool) -> Result<()>;
+    async fn diagnostic(&self, _interface: &str) -> Option<serde_json::Value> {
+        None
+    }
     async fn verify_ready(&self, _interface: &str) -> Result<()> {
         Ok(())
     }
@@ -108,6 +111,16 @@ impl DhcpClientRuntimeReconciler for DhcpClientSupervisor {
         Ok(())
     }
 
+    async fn diagnostic(&self, interface: &str) -> Option<serde_json::Value> {
+        let status = self.status(interface).await?;
+        let state = match status.state {
+            crate::dhcp::client::DhcpClientRunState::Running => "running",
+            crate::dhcp::client::DhcpClientRunState::WaitingForInterface => "waiting_for_interface",
+            crate::dhcp::client::DhcpClientRunState::Degraded { .. } => "degraded",
+        };
+        Some(serde_json::json!({"state": state, "lease_present": status.lease.is_some()}))
+    }
+
     async fn verify_ready(&self, interface: &str) -> Result<()> {
         self.wait_until_ready(interface).await
     }
@@ -122,6 +135,9 @@ impl DhcpClientRuntimeReconciler for DhcpClientSupervisor {
 
 #[async_trait]
 pub(super) trait WifiRuntimeReconciler: Send + Sync {
+    async fn diagnostic(&self, _interface: &str) -> Option<serde_json::Value> {
+        None
+    }
     async fn ensure_alive(&self) -> Result<bool>;
     async fn ensure_alive_for_config(&self, _config: &AppConfig) -> Result<bool> {
         self.ensure_alive().await
@@ -163,6 +179,11 @@ impl WifiRuntimeReconciler for HostapdSupervisor {
 
 #[async_trait]
 impl WifiRuntimeReconciler for WifiClientSupervisor {
+    async fn diagnostic(&self, interface: &str) -> Option<serde_json::Value> {
+        let status = self.status(interface).await?;
+        Some(serde_json::json!({"pid": status.pid, "wpa_state": status.wpa_state}))
+    }
+
     async fn association_frequency(&self, interface: &str) -> Option<u32> {
         let status = self.status(interface).await?;
         if status.wpa_state.is_connected() {
@@ -613,6 +634,14 @@ async fn reconcile_interface_runtime_once(
         return (version, None);
     }
     let revision = desired.interface_revision(name);
+    let operation = desired.operation_for(name).await;
+    let token = operation.as_ref().map(|(token, _)| token.clone());
+    let diagnostic = operation
+        .map(|(_, diagnostic)| diagnostic)
+        .unwrap_or_else(|| {
+            crate::logging::operation::Operation::new("reconcile", "converge_interface")
+        });
+    let started = time::Instant::now();
     let ensure_current = || -> Result<()> {
         desired
             .recovery()
@@ -623,7 +652,15 @@ async fn reconcile_interface_runtime_once(
         );
         Ok(())
     };
-    let outcome = async {
+    let work = async {
+        if token.is_some() {
+            tracing::info!(
+                interface = name,
+                ?token,
+                revision,
+                "interface convergence started"
+            );
+        }
         desired.recovery().check_commit(desired.state_dir())?;
         let effective = desired.effective().await?;
         crate::wifi::policy::WifiRadioPolicy::validate(&effective.network, |name| {
@@ -778,7 +815,16 @@ async fn reconcile_interface_runtime_once(
                 apply_dhcp_reconcile_action(dhcp, name, DhcpReconcileAction::Disable).await?;
                 current_dhcp = None;
                 if let Some(client) = wifi_client {
-                    client.reconcile_interface(name, &stopped).await?;
+                    crate::logging::operation::stage(
+                        if restoring {
+                            "stop_wifi_for_restore"
+                        } else {
+                            "stop_wifi_for_mac_change"
+                        },
+                        None,
+                        client.reconcile_interface(name, &stopped),
+                    )
+                    .await?;
                 }
                 if let Some(access_point) = wifi {
                     access_point.reconcile_interface(name, &stopped).await?;
@@ -795,7 +841,12 @@ async fn reconcile_interface_runtime_once(
                         .bind_restored_mac_session(name, observed_interface.index, config)
                         .await;
                 } else if let Some(mac) = target_mac {
-                    interface_manager.apply_mac_address(name, mac).await?;
+                    crate::logging::operation::stage(
+                        "change_mac",
+                        None,
+                        interface_manager.apply_mac_address(name, mac),
+                    )
+                    .await?;
                 }
             }
             ensure_current()?;
@@ -807,8 +858,43 @@ async fn reconcile_interface_runtime_once(
                 }
             }
             ensure_current()?;
+            // Teardown and MAC changes can invalidate the earlier link snapshot.
+            // Raise the link before consumers send packets, but leave address
+            // reconciliation until the previous DHCP client has been stopped.
+            if !restoring && config.managed {
+                let current_link = network
+                    .list_interfaces()
+                    .await?
+                    .into_iter()
+                    .find(|link| link.name == name)
+                    .ok_or_else(|| crate::netlink::MissingInterface {
+                        interface: name.to_owned(),
+                    })?;
+                if !current_link.is_up {
+                    interface_manager
+                        .plan_interface(
+                            name,
+                            config,
+                            Some(config.role),
+                            management_allowlist.contains(name),
+                        )
+                        .await?;
+                    crate::logging::operation::stage("raise_link", None, network.set_link_up(name))
+                        .await?;
+                }
+            }
+            ensure_current()?;
             if let Some(client) = wifi_client {
-                client.reconcile_interface(name, config).await?;
+                crate::logging::operation::stage(
+                    if config.wifi_client.is_some() {
+                        "configure_wifi"
+                    } else {
+                        "remove_wifi_configuration"
+                    },
+                    None,
+                    client.reconcile_interface(name, config),
+                )
+                .await?;
             } else {
                 anyhow::ensure!(
                     config.wifi_client.is_none(),
@@ -816,23 +902,41 @@ async fn reconcile_interface_runtime_once(
                 );
             }
             ensure_current()?;
-            let mut link_ready = true;
+            // DHCP policy can outlive our station profile. Preserve it while
+            // disconnected, and permit acquisition on an externally associated radio.
+            let mut link_ready = if observed_interface.is_wireless && config.wifi_client.is_none() {
+                network.link_carrier(name).await?.unwrap_or(false)
+            } else {
+                true
+            };
             if config.wifi_client.is_some() {
-                let deadline = time::Instant::now() + Duration::from_secs(5);
-                loop {
-                    link_ready = match wifi_client {
-                        Some(client) => client.association_ready(name).await.unwrap_or(false),
-                        None => false,
-                    };
-                    if link_ready || !strict {
-                        break;
-                    }
-                    anyhow::ensure!(
-                        time::Instant::now() < deadline,
-                        "Wi-Fi association is not ready on {name}"
-                    );
-                    time::sleep(Duration::from_millis(20)).await;
-                }
+                crate::logging::operation::stage(
+                    "wait_association",
+                    Some(crate::wifi::client::ASSOCIATION_READY_TIMEOUT),
+                    async {
+                        let deadline =
+                            time::Instant::now() + crate::wifi::client::ASSOCIATION_READY_TIMEOUT;
+                        loop {
+                            ensure_current()?;
+                            link_ready = match wifi_client {
+                                Some(client) => {
+                                    client.association_ready(name).await.unwrap_or(false)
+                                }
+                                None => false,
+                            };
+                            if link_ready || !strict {
+                                break;
+                            }
+                            anyhow::ensure!(
+                                time::Instant::now() < deadline,
+                                "Wi-Fi association is not ready on {name}"
+                            );
+                            time::sleep(Duration::from_millis(20)).await;
+                        }
+                        Ok(())
+                    },
+                )
+                .await?;
             }
             ensure_current()?;
             if let Some(client) = dhcp_client {
@@ -846,6 +950,14 @@ async fn reconcile_interface_runtime_once(
 
             ensure_current()?;
             if !restoring {
+                let current_link = network
+                    .list_interfaces()
+                    .await?
+                    .into_iter()
+                    .find(|link| link.name == name)
+                    .ok_or_else(|| crate::netlink::MissingInterface {
+                        interface: name.to_owned(),
+                    })?;
                 let current_addresses = network.list_ipv4_addresses(name).await?;
                 let needs_apply = if config.managed {
                     // Foreign addresses are intentionally preserved; their presence
@@ -859,7 +971,7 @@ async fn reconcile_interface_runtime_once(
                             relevant.push(address.clone());
                         }
                     }
-                    interface_needs_reapply(observed_interface, &relevant, config, false)
+                    interface_needs_reapply(&current_link, &relevant, config, false)
                 } else {
                     interface_manager
                         .owns_any_address(name, &current_addresses)
@@ -920,18 +1032,103 @@ async fn reconcile_interface_runtime_once(
                 plan_dhcp_reconcile(desired_dhcp, current_dhcp, true, ipv4_ready, binding_stale),
             )
             .await?;
-            if strict && DhcpClientSpec::from_interface_config(name, config)?.is_some() {
+            if strict
+                && link_ready
+                && DhcpClientSpec::from_interface_config(name, config)?.is_some()
+            {
                 if let Some(client) = dhcp_client {
-                    client.verify_ready(name).await?;
+                    crate::logging::operation::stage(
+                        "wait_dhcp",
+                        Some(crate::dhcp::client::supervisor::LEASE_READY_TIMEOUT),
+                        client.verify_ready(name),
+                    )
+                    .await?;
                 }
             }
             Ok(())
         }
         .await;
 
+        if result.is_err() && token.is_some() {
+            let observation_started = time::Instant::now();
+            let snapshot = time::timeout(Duration::from_secs(1), async {
+                let link = network
+                    .list_interfaces()
+                    .await
+                    .ok()
+                    .and_then(|links| links.into_iter().find(|link| link.name == name));
+                let carrier = network.link_carrier(name).await.ok().flatten();
+                let associated = match wifi_client {
+                    Some(client) => client.association_ready(name).await,
+                    None => None,
+                };
+                let wifi_state = match wifi_client {
+                    Some(client) => client.diagnostic(name).await,
+                    None => None,
+                };
+                let dhcp_state = match dhcp_client {
+                    Some(client) => client.diagnostic(name).await,
+                    None => None,
+                };
+                let rfkill_block_detected = crate::wifi::process::check_radio_unblocked(name)
+                    .await
+                    .is_err();
+                (
+                    link.map(|link| link.is_up),
+                    carrier,
+                    associated,
+                    rfkill_block_detected,
+                    wifi_state,
+                    dhcp_state,
+                )
+            })
+            .await;
+            match snapshot {
+                Ok((
+                    admin_up,
+                    carrier,
+                    associated,
+                    rfkill_block_detected,
+                    wifi_state,
+                    dhcp_state,
+                )) => tracing::warn!(
+                    interface = name,
+                    ?token,
+                    revision,
+                    ?admin_up,
+                    ?carrier,
+                    ?associated,
+                    rfkill_block_detected,
+                    ?wifi_state,
+                    ?dhcp_state,
+                    observation_elapsed_ms = observation_started.elapsed().as_millis() as u64,
+                    "interface failure observation"
+                ),
+                Err(_) => tracing::warn!(
+                    interface = name,
+                    ?token,
+                    revision,
+                    "interface failure observation timed out"
+                ),
+            }
+        }
+        if token.is_some() || result.is_err() {
+            tracing::debug!(
+                interface = name,
+                ?token,
+                revision,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                outcome = if result.is_ok() {
+                    "completed"
+                } else {
+                    "failed"
+                },
+                "interface convergence finished"
+            );
+        }
         result
-    }
-    .await;
+    };
+    let outcome = diagnostic.scope(work).await;
     if desired.interface_revision(name) != revision {
         return (version, None);
     }

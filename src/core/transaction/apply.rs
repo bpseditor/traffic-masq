@@ -30,6 +30,7 @@ impl NetworkTransactionManager {
             Vec::new()
         };
         tracing::warn!(%interface, %token, error = %format!("{error:#}"), ?running_network_managers, "interface change failed; restoring previous configuration");
+        let rollback_started = tokio::time::Instant::now();
         let path = self.journal_path(interface);
         let rollback = self
             .recovery()
@@ -77,6 +78,10 @@ impl NetworkTransactionManager {
             })
             .await;
         if let Err(rollback_error) = rollback {
+            tracing::error!(%interface, %token, outcome = "recovery_pending",
+                elapsed_ms = rollback_started.elapsed().as_millis() as u64,
+                apply_error = %format!("{error:#}"), rollback_error = %format!("{rollback_error:#}"),
+                manual_recovery_required = self.recovery().stopped(&path), "interface apply compensation finished");
             // The requested state is no longer desired, but until a fresh
             // convergence pass proves the committed state was restored the
             // transaction must stay visible and block overlapping network
@@ -115,6 +120,9 @@ impl NetworkTransactionManager {
                 "network change failed to converge: {error}; rollback also failed: {rollback_error}; recovery remains pending as token {token}"
             );
         }
+        tracing::info!(%interface, %token, outcome = "restored",
+            elapsed_ms = rollback_started.elapsed().as_millis() as u64, apply_error = %format!("{error:#}"),
+            manual_recovery_required = false, "interface apply compensation finished");
         desired.withdraw(&token).await;
         self.inner.pending.lock().await.remove(&token);
         cancellation.armed = false;

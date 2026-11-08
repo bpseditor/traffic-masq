@@ -110,6 +110,7 @@ fn convergence_deadline_exceeds_sequential_wifi_and_dhcp_startup_budgets() {
     assert!(
         CONVERGENCE_DEADLINE
             > crate::wifi::lifecycle::STARTUP_READY_TIMEOUT
+                + crate::wifi::client::ASSOCIATION_READY_TIMEOUT
                 + crate::dhcp::client::supervisor::LEASE_READY_TIMEOUT
     );
 }

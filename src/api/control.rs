@@ -330,9 +330,45 @@ impl ControlService {
     /// does not interrupt an accepted network mutation.
     pub async fn dispatch(&self, request: Request) -> Response {
         let service = self.clone();
+        let diagnostic = crate::logging::operation::Operation::new("api", request.command_name());
+        let log_operation = request.policy().long_running || request.policy().needs_admission();
+        let interface = request.policy().recovery_interface.map(str::to_owned);
         match self
             .operations
-            .run(async move { service.dispatch_inner(request).await })
+            .run(async move {
+                diagnostic
+                    .scope(async move {
+                        let started = std::time::Instant::now();
+                        if log_operation {
+                            tracing::info!(?interface, "control operation started");
+                        }
+                        let response = Box::pin(service.dispatch_inner(request)).await;
+                        let outcome = match &response {
+                            Response::Error { .. }
+                            | Response::DhcpClientError { .. }
+                            | Response::RouterError { .. }
+                            | Response::RouterProvisioningError { .. }
+                            | Response::VpnError { .. }
+                            | Response::VpnPolicyError { .. }
+                            | Response::WifiError { .. }
+                            | Response::WifiClientError { .. }
+                            | Response::WifiClientProfileError { .. } => "rejected",
+                            Response::NetworkChangePending { .. } => "awaiting_commit",
+                            Response::Unknown => "unknown",
+                            _ => "completed",
+                        };
+                        if log_operation {
+                            tracing::info!(
+                                ?interface,
+                                outcome,
+                                elapsed_ms = started.elapsed().as_millis() as u64,
+                                "control operation finished"
+                            );
+                        }
+                        response
+                    })
+                    .await
+            })
             .await
         {
             Ok(response) => response,

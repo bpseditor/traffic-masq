@@ -13,7 +13,7 @@ use crate::{map_request, RawResponse, RestRequest};
 
 pub const DEFAULT_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const CONTROL_MUTATION_REQUEST_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(65);
+    std::time::Duration::from_secs(145);
 const API_PREFIX: &str = "/api/v1";
 
 #[derive(Debug, Clone, Deserialize)]
@@ -316,7 +316,7 @@ fn serialize_json(value: &(impl Serialize + ?Sized)) -> Result<Vec<u8>> {
 }
 
 /// Bound client waiting independently of the shared POST transport.
-/// Writes, scans and plans retain 65 seconds; observations use 10 seconds.
+/// Writes, scans and plans allow 145 seconds; observations use 10 seconds.
 pub fn control_request_timeout(
     request: &traffic_masq_protocol::ControlRequest,
 ) -> std::time::Duration {

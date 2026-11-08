@@ -64,6 +64,9 @@ fn control_deadlines_follow_commands_instead_of_the_shared_post_method() {
         );
     }
     assert!(CONTROL_MUTATION_REQUEST_TIMEOUT > crate::api::HTTP_CONNECTION_TIMEOUT);
+    assert!(
+        crate::api::HTTP_CONNECTION_TIMEOUT > crate::core::transaction::CONVERGENCE_DEADLINE * 2
+    );
 }
 
 #[test]

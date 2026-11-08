@@ -1088,3 +1088,37 @@ for modified sources. Without a checkout or an explicit identity, fields report
 `unknown`. An explicit revision without an explicit dirty state reports
 `build_dirty=unknown`. A commit and dirty flag do not identify toolchain or
 dependency overrides; retain build artifacts and build records when those matter.
+
+### Correlating network operations in logs
+
+Control mutations and long-running requests log `operation_id`, `source`, and
+`command`, without recording the request payload. Interface proposals include
+`token`, an allowlisted configuration `diff`, and the target's DHCP/Wi-Fi
+ownership flags. Follow `operation_id` through convergence and launched DHCP
+and Wi-Fi process diagnostics; use `token` to join a later commit, automatic
+rollback, or recovery request to the original proposal. Process output retains
+its launch operation identity; it does not claim that subsequent events were
+caused by that original request. Operation IDs are diagnostic metadata and are
+not persisted across daemon restarts; use the transaction token and `run_id`
+across restarts.
+
+Stages include stopping Wi-Fi for a MAC change or restoration, changing MAC,
+raising the link, configuring/removing Wi-Fi, waiting for association, and waiting
+for DHCP. They log elapsed time, the applicable budget, and failures with their
+OS error code when available. Explicit operations log stage boundaries at INFO;
+background reconciliation uses DEBUG so periodic retries do not flood INFO.
+Failed tentative convergence takes a bounded, read-only observation of link,
+carrier, association, supplicant PID/state, DHCP state/lease presence, and detected
+rfkill blocking. Missing observations remain unknown; no detected rfkill block
+is not proof that sysfs was readable. These observations are sampled after the
+failure and are not an atomic snapshot of the machine.
+
+DHCP reply rejection includes the ACK/NAK validation causes and transaction IDs.
+DEBUG packet metadata includes message type and server address, never raw packet
+contents. The first three rejections are warnings; continuing failures are
+summarized at most every 30 seconds and successful acquisition reports the total.
+Config diagnostics exclude SSIDs, hostnames, passphrases, keys and credential
+paths. Credential updates report only `keep`, `set`, or `clear`, never their values.
+
+For packet metadata and background stages, enable module-specific DEBUG filters,
+for example `RUST_LOG=traffic_masq::dhcp::client=debug,traffic_masq::app::reconcile=debug,traffic_masq::logging::operation=debug`.

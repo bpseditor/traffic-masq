@@ -395,6 +395,7 @@ impl DhcpRuntimeReconciler for FakeDhcpReconciler {
 
 #[derive(Debug, Default)]
 struct FakeDhcpClientReconciler {
+    require_up: Option<Arc<FakeNetworkProvider>>,
     reject_readiness: bool,
     readiness_checks: Mutex<usize>,
     specs: Mutex<HashMap<String, DhcpClientSpec>>,
@@ -421,6 +422,12 @@ impl DhcpClientRuntimeReconciler for FakeDhcpClientReconciler {
     }
 
     async fn reconcile(&self, spec: DhcpClientSpec, link_ready: bool) -> Result<()> {
+        if let Some(network) = &self.require_up {
+            anyhow::ensure!(
+                network.interfaces.lock().await[&spec.interface].is_up,
+                "DHCP started on a down interface"
+            );
+        }
         self.readiness
             .lock()
             .await
@@ -2700,4 +2707,153 @@ async fn stopped_interface_recovery_keeps_unrelated_liveness_enabled() {
         !dhcp_allowed,
         "shared DHCP restart must not rebuild a fenced server"
     );
+}
+
+#[tokio::test]
+async fn wireless_dhcp_without_station_waits_for_carrier_and_resumes_when_connected() {
+    let directory = tempdir().unwrap();
+    let mut config = dhcp_client_reconcile_config();
+    config.network.interfaces.remove("lan0");
+    let overrides = RuntimeOverrideManager::load(directory.path(), &config)
+        .await
+        .unwrap();
+    let desired = DesiredNetworkState::new(config.clone(), overrides);
+    desired
+        .propose(
+            "disconnect",
+            "wan0",
+            config.network.interfaces["wan0"].clone(),
+            true,
+        )
+        .await;
+    let network = Arc::new(FakeNetworkProvider::default());
+    network.add_interface("wan0", 7).await;
+    network
+        .interfaces
+        .lock()
+        .await
+        .get_mut("wan0")
+        .unwrap()
+        .is_wireless = true;
+    let client = FakeDhcpClientReconciler::default();
+    for carrier in [false, true] {
+        network.carriers.lock().await.insert("wan0".into(), carrier);
+        let failures = reconcile_network_runtime_once(
+            &desired,
+            &AddressOwnershipJournal::in_memory(),
+            network.clone(),
+            &FakeDhcpReconciler::default(),
+            None::<&FakeWifiReconciler>,
+            Some(&FakeWifiReconciler::default()),
+            Some(&client),
+        )
+        .await
+        .unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(client.readiness.lock().await.last().unwrap().1, carrier);
+        assert_eq!(*client.readiness_checks.lock().await, usize::from(carrier));
+        assert!(client.specs.lock().await.contains_key("wan0"));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn strict_wifi_convergence_allows_a_scan_longer_than_five_seconds() {
+    struct SlowWifi {
+        started: time::Instant,
+    }
+    #[async_trait]
+    impl WifiRuntimeReconciler for SlowWifi {
+        async fn ensure_alive(&self) -> Result<bool> {
+            Ok(false)
+        }
+        async fn association_ready(&self, _: &str) -> Option<bool> {
+            Some(self.started.elapsed() >= Duration::from_secs(8))
+        }
+    }
+    let directory = tempdir().unwrap();
+    let mut config = dhcp_client_reconcile_config();
+    config.network.interfaces.remove("lan0");
+    config
+        .network
+        .interfaces
+        .get_mut("wan0")
+        .unwrap()
+        .wifi_client = Some(crate::config::WifiClientConfig {
+        ssid: "upstream".into(),
+        country_code: None,
+        security: crate::config::WifiClientSecurity::Open,
+        passphrase_file: None,
+    });
+    let overrides = RuntimeOverrideManager::load(directory.path(), &config)
+        .await
+        .unwrap();
+    let desired = DesiredNetworkState::new(config.clone(), overrides);
+    desired
+        .propose(
+            "connect",
+            "wan0",
+            config.network.interfaces["wan0"].clone(),
+            true,
+        )
+        .await;
+    let network = Arc::new(FakeNetworkProvider::default());
+    network.add_interface("wan0", 7).await;
+    let wifi = SlowWifi {
+        started: time::Instant::now(),
+    };
+    let client = FakeDhcpClientReconciler::default();
+    let failures = reconcile_network_runtime_once(
+        &desired,
+        &AddressOwnershipJournal::in_memory(),
+        network,
+        &FakeDhcpReconciler::default(),
+        None::<&FakeWifiReconciler>,
+        Some(&wifi),
+        Some(&client),
+    )
+    .await
+    .unwrap();
+    assert!(failures.is_empty(), "{failures:?}");
+    assert_eq!(*client.readiness_checks.lock().await, 1);
+    assert!(wifi.started.elapsed() >= Duration::from_secs(8));
+}
+
+#[tokio::test]
+async fn convergence_raises_link_before_starting_dhcp() {
+    let directory = tempdir().unwrap();
+    let mut config = dhcp_client_reconcile_config();
+    config.network.interfaces.remove("lan0");
+    let overrides = RuntimeOverrideManager::load(directory.path(), &config)
+        .await
+        .unwrap();
+    let desired = DesiredNetworkState::new(config.clone(), overrides);
+    desired
+        .propose(
+            "enable",
+            "wan0",
+            config.network.interfaces["wan0"].clone(),
+            true,
+        )
+        .await;
+    let network = Arc::new(FakeNetworkProvider::default());
+    network
+        .add_interface_with_state("wan0", 7, false, vec![])
+        .await;
+    let client = FakeDhcpClientReconciler {
+        require_up: Some(network.clone()),
+        ..Default::default()
+    };
+    let failures = reconcile_network_runtime_once(
+        &desired,
+        &AddressOwnershipJournal::in_memory(),
+        network,
+        &FakeDhcpReconciler::default(),
+        None::<&FakeWifiReconciler>,
+        None::<&FakeWifiReconciler>,
+        Some(&client),
+    )
+    .await
+    .unwrap();
+    assert!(failures.is_empty(), "{failures:?}");
+    assert_eq!(*client.readiness_checks.lock().await, 1);
 }

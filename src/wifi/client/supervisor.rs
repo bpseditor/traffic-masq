@@ -304,6 +304,15 @@ impl WifiClientSupervisor {
 
     /// Perform normal startup cleanup and apply committed station state.
     pub async fn reconcile_startup(&self, config: &AppConfig) -> Result<(), ClientSupervisorError> {
+        crate::logging::operation::Operation::new("startup", "restore_wifi_clients")
+            .scope(self.reconcile_startup_with_diagnostics(config))
+            .await
+    }
+
+    async fn reconcile_startup_with_diagnostics(
+        &self,
+        config: &AppConfig,
+    ) -> Result<(), ClientSupervisorError> {
         crate::wifi::policy::WifiRadioPolicy::validate_system(&config.network)
             .map_err(anyhow::Error::from)?;
         let specs = Self::effective_specs(config)?;
@@ -1219,8 +1228,16 @@ impl WifiClientSupervisor {
             .as_ref()
             .filter(|task| task.record.pid != 0 || record.is_none())
         {
-            self.stop_task(task, "Wi-Fi client configuration removed")
-                .await?;
+            let reason = match crate::logging::operation::STAGE
+                .try_with(|stage| *stage)
+                .ok()
+            {
+                Some("stop_wifi_for_mac_change") => "MAC address change",
+                Some("stop_wifi_for_restore") => "transaction restoration",
+                Some("remove_wifi_configuration") => "Wi-Fi client configuration removed",
+                _ => "Wi-Fi client disabled",
+            };
+            self.stop_task(task, reason).await?;
         }
         clear_owned_record(&self.record_store(interface)).await?;
         let runtime_config = config_path(&self.inner.runtime_dir, interface);

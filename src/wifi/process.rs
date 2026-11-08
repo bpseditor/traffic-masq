@@ -668,7 +668,7 @@ where
     R: AsyncRead + Unpin + Send + 'static,
 {
     let interface = interface.to_string();
-    tokio::spawn(async move {
+    tokio::spawn(crate::logging::operation::inherit(async move {
         let mut lines = BufReader::new(output).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             let lower = line.to_ascii_lowercase();
@@ -689,7 +689,7 @@ where
                 tracing::info!(daemon, %interface, pid, stream, output = %line, "Wi-Fi daemon diagnostic");
             }
         }
-    })
+    }))
 }
 
 #[cfg(target_os = "linux")]

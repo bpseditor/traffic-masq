@@ -314,6 +314,7 @@ impl<R: Send + 'static> SupervisedProcess for FakeSupervisedProcess<R> {
 /// and policy reconciliation together.
 #[derive(Debug)]
 pub(crate) struct FakeNetworkProvider {
+    pub(crate) carriers: Mutex<HashMap<String, bool>>,
     pub(crate) wireless_phys: StdMutex<HashMap<String, String>>,
     pub(crate) interfaces: Mutex<HashMap<String, NetworkInterface>>,
     pub(crate) macs: Mutex<HashMap<String, [u8; 6]>>,
@@ -329,6 +330,7 @@ pub(crate) struct FakeNetworkProvider {
 impl Default for FakeNetworkProvider {
     fn default() -> Self {
         Self {
+            carriers: Mutex::new(HashMap::new()),
             wireless_phys: StdMutex::new(HashMap::new()),
             interfaces: Mutex::new(HashMap::new()),
             macs: Mutex::new(HashMap::new()),
@@ -384,6 +386,9 @@ impl FakeNetworkProvider {
 
 #[async_trait]
 impl NetworkProvider for FakeNetworkProvider {
+    async fn link_carrier(&self, name: &str) -> Result<Option<bool>> {
+        Ok(self.carriers.lock().await.get(name).copied())
+    }
     async fn mac_address(&self, name: &str) -> Result<Option<[u8; 6]>> {
         Ok(self.macs.lock().await.get(name).copied())
     }

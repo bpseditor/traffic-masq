@@ -47,7 +47,8 @@ enum RollbackTrigger {
 /// a request that never answers.
 // Wi-Fi association and DHCP readiness run sequentially. Cover both startup
 // budgets and leave headroom for the other convergence work.
-const CONVERGENCE_DEADLINE: Duration = crate::wifi::lifecycle::STARTUP_READY_TIMEOUT
+pub(crate) const CONVERGENCE_DEADLINE: Duration = crate::wifi::lifecycle::STARTUP_READY_TIMEOUT
+    .saturating_add(crate::wifi::client::ASSOCIATION_READY_TIMEOUT)
     .saturating_add(crate::dhcp::client::supervisor::LEASE_READY_TIMEOUT)
     .saturating_add(Duration::from_secs(5));
 
@@ -440,6 +441,19 @@ impl NetworkTransactionManager {
         interface: &str,
         change: InterfaceChange<'_>,
     ) -> Result<PendingNetworkChange> {
+        let operation = crate::logging::operation::current().unwrap_or_else(|| {
+            crate::logging::operation::Operation::new("internal", "apply_interface")
+        });
+        operation
+            .scope(self.apply_with_diagnostics(interface, change))
+            .await
+    }
+
+    async fn apply_with_diagnostics(
+        &self,
+        interface: &str,
+        change: InterfaceChange<'_>,
+    ) -> Result<PendingNetworkChange> {
         let InterfaceChange {
             config,
             previous: previous_config,
@@ -508,6 +522,15 @@ impl NetworkTransactionManager {
         let token = self.next_token();
         let desired = self.desired();
         let previous_config = desired.committed_interface(interface).await?;
+        tracing::info!(%interface, %token,
+            diff = %crate::logging::operation::interface_diff(previous_config.as_ref(), config),
+            target = %crate::logging::operation::interface_summary(Some(config)),
+            credential_update = match &passphrase_update {
+                WifiPassphraseUpdate::Keep => "keep",
+                WifiPassphraseUpdate::Set(_) => "set",
+                WifiPassphraseUpdate::Clear => "clear",
+            },
+            "interface change proposed");
         // Retain _interface_operation while holding the lane and waiting here:
         // recovery holds the credential writer and skips transaction-owned lanes.
         // See docs/architecture.md, "Interface lock ordering".
@@ -852,6 +875,32 @@ impl NetworkTransactionManager {
         token: &str,
         trigger: RollbackTrigger,
     ) -> Result<PendingNetworkChange> {
+        let source = match trigger {
+            RollbackTrigger::Automatic => "rollback_timer",
+            RollbackTrigger::Manual => "api",
+            RollbackTrigger::AdministrativeShutdown => "shutdown",
+        };
+        let operation = crate::logging::operation::current().unwrap_or_else(|| {
+            crate::logging::operation::Operation::new(source, "rollback_interface")
+        });
+        operation.scope(async {
+            let started = tokio::time::Instant::now();
+            let result = self.rollback_with_diagnostics(token, trigger).await;
+            match &result {
+                Ok(_) => tracing::info!(%token, trigger = source, elapsed_ms = started.elapsed().as_millis() as u64,
+                    outcome = "completed", "interface rollback finished"),
+                Err(error) => tracing::error!(%token, trigger = source, elapsed_ms = started.elapsed().as_millis() as u64,
+                    outcome = "failed", error = %format!("{error:#}"), "interface rollback finished"),
+            }
+            result
+        }).await
+    }
+
+    async fn rollback_with_diagnostics(
+        &self,
+        token: &str,
+        trigger: RollbackTrigger,
+    ) -> Result<PendingNetworkChange> {
         let manual = trigger != RollbackTrigger::Automatic;
         self.import_stopped_journals().await?;
         self.recovery().check_commit(self.desired().state_dir())?;
@@ -891,6 +940,7 @@ impl NetworkTransactionManager {
             if trigger == RollbackTrigger::Manual {
                 bail!("network change {token} was already committed; rollback is unavailable");
             }
+            tracing::info!(%token, outcome = "already_committed", "rollback skipped; committed journal cleaned up");
             return Ok(pending.info);
         }
         self.recovery().check_rollback_scope(
