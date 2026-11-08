@@ -94,6 +94,7 @@ struct FakeNetworkProvider {
     fail_address_read: Mutex<Option<String>>,
     macs: Mutex<HashMap<String, [u8; 6]>>,
     fail_mac_write: Mutex<bool>,
+    fail_link_up: Mutex<bool>,
 }
 
 impl FakeNetworkProvider {
@@ -159,6 +160,10 @@ impl NetworkProvider for FakeNetworkProvider {
     }
 
     async fn set_link_up(&self, name: &str) -> Result<()> {
+        if *self.fail_link_up.lock().await {
+            return Err(anyhow::Error::new(std::io::Error::from_raw_os_error(132))
+                .context(format!("RTM_NEWLINK while setting {name} up")));
+        }
         self.interfaces
             .lock()
             .await
@@ -827,7 +832,7 @@ async fn refuses_management_change_without_confirmation() {
         .await
         .expect_err("management change should be rejected");
 
-    assert!(error.to_string().contains("outside-router interface"));
+    assert!(format!("{error:#}").contains("outside-router interface"));
 }
 
 #[tokio::test]
@@ -846,7 +851,7 @@ async fn refuses_relabelling_a_management_interface_without_confirmation() {
         .await
         .expect_err("relabelling an outside-router interface should be rejected");
 
-    assert!(error.to_string().contains("outside-router interface"));
+    assert!(format!("{error:#}").contains("outside-router interface"));
 
     manager
         .apply_interface(
@@ -1342,4 +1347,30 @@ async fn automatic_mac_preview_and_apply_share_identity_across_network_connectio
             .octets(),
         original
     );
+}
+
+#[tokio::test]
+async fn failed_apply_preserves_os_error_after_successful_rollback() {
+    let provider = Arc::new(FakeNetworkProvider::default());
+    provider.add_interface("eth0", false, vec![]).await;
+    *provider.fail_link_up.lock().await = true;
+    let manager = InterfaceManager::new(provider, AddressOwnershipJournal::in_memory());
+    let error = manager
+        .apply_interface(
+            "eth0",
+            &config(InterfaceRole::Output, "192.168.50.1/24"),
+            None,
+            true,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .downcast_ref::<std::io::Error>()
+            .unwrap()
+            .raw_os_error(),
+        Some(132)
+    );
+    assert!(format!("{error:#}").contains("RTM_NEWLINK"));
+    assert!(format!("{error:#}").contains("previous state was restored"));
 }

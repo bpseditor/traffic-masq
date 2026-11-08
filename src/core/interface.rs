@@ -639,12 +639,10 @@ impl InterfaceManager {
             .await
         {
             return match self.rollback(&snapshot).await {
-                Ok(()) => Err(anyhow::anyhow!(
-                    "interface apply failed; previous state was restored: {error}"
-                )),
-                Err(rollback_error) => Err(anyhow::anyhow!(
-                    "interface apply failed: {error}; rollback also failed: {rollback_error}"
-                )),
+                Ok(()) => Err(error.context("interface apply failed; previous state was restored")),
+                Err(rollback_error) => Err(error.context(format!(
+                    "interface apply failed; rollback also failed: {rollback_error:#}"
+                ))),
             };
         }
         Ok(())
