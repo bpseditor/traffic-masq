@@ -1,22 +1,6 @@
 use super::*;
 
 #[tokio::test]
-async fn competing_manager_scan_returns_a_list_without_errors() {
-    // On any Linux system /proc is readable; the result may legitimately be
-    // empty, but the scan itself must never fail or panic.
-    let _ = super::find_competing_network_managers().await;
-}
-
-#[test]
-fn competing_daemons_excludes_our_own_supervised_processes() {
-    // hostapd and wpa_supplicant are what THIS daemon supervises; treating
-    // them as competitors would make the scan report itself as the
-    // interloper on almost every restart.
-    assert!(!super::COMPETING_DAEMONS.contains(&"hostapd"));
-    assert!(!super::COMPETING_DAEMONS.contains(&"wpa_supplicant"));
-}
-
-#[tokio::test]
 async fn scan_canonicalizes_aliases_and_ignores_unavailable_or_supervised_processes() {
     let root = tempfile::tempdir().unwrap();
     for (pid, comm) in [

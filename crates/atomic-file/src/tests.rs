@@ -33,16 +33,11 @@ fn replace_leaves_no_temporary_behind() {
 
     replace(&path, b"contents", PRIVATE_FILE_MODE).expect("write");
 
-    let leftovers: Vec<_> = fs::read_dir(directory.path())
+    let entries: Vec<_> = fs::read_dir(directory.path())
         .expect("read_dir")
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.ends_with(".tmp") || name.contains(".tmp-"))
+        .map(|entry| entry.expect("directory entry").path())
         .collect();
-    assert!(
-        leftovers.is_empty(),
-        "left temporaries behind: {leftovers:?}"
-    );
+    assert_eq!(entries, vec![path], "only the target should remain");
 }
 
 #[test]

@@ -339,10 +339,8 @@ fn ipv4_route_spec_validates_gateway_and_table() {
     invalid_gw.gateway = Some(std::net::Ipv4Addr::new(224, 0, 0, 1));
     assert!(invalid_gw.validate().is_err());
 
-    // Rejects table 0 and 255
+    // Table 0 is covered by route_spec_requires_next_hop_and_explicit_table.
     let mut invalid_table = valid.clone();
-    invalid_table.table = 0;
-    assert!(invalid_table.validate().is_err());
     invalid_table.table = 255;
     assert!(invalid_table.validate().is_err());
 }

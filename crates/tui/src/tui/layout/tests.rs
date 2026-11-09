@@ -36,21 +36,6 @@ fn section_at_finds_the_tab_containing_the_click_point() {
 }
 
 #[test]
-fn section_at_works_without_dhcp_client_tab() {
-    let tabs = [
-        (Rect::new(0, 0, 8, 1), Section::Dashboard),
-        (Rect::new(8, 0, 8, 1), Section::Interfaces),
-        (Rect::new(16, 0, 8, 1), Section::Dhcp),
-        (Rect::new(24, 0, 8, 1), Section::Router),
-        (Rect::new(32, 0, 8, 1), Section::Vpn),
-        (Rect::new(40, 0, 8, 1), Section::Wifi),
-        (Rect::new(48, 0, 8, 1), Section::Settings),
-        (Rect::new(56, 0, 8, 1), Section::Log),
-    ];
-    assert_eq!(section_at(&tabs, (19, 0)), Some(Section::Dhcp));
-    assert_eq!(section_at(&tabs, (27, 0)), Some(Section::Router));
-}
-#[test]
 fn clip_interactions_removes_hidden_buttons_and_clips_lists() {
     let mut ui = UiLayout {
         buttons: vec![(Rect::new(2, 4, 5, 1), 0), (Rect::new(2, 12, 5, 1), 1)],

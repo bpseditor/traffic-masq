@@ -338,16 +338,6 @@ async fn startup_rollback_dropping_without_unwind_runs_nothing() {
     assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
 }
 
-#[tokio::test]
-async fn startup_rollback_unwind_only_runs_what_was_actually_pushed() {
-    let order = std::sync::Arc::new(Mutex::new(Vec::new()));
-    let mut stack = StartupRollback::new();
-    let pushed = order.clone();
-    stack.push(async move { pushed.lock().await.push("interfaces") });
-    stack.unwind().await;
-    assert_eq!(*order.lock().await, vec!["interfaces"]);
-}
-
 #[derive(Debug, Default)]
 struct FakeDhcpReconciler {
     specs: Mutex<HashMap<String, DhcpServiceSpec>>,

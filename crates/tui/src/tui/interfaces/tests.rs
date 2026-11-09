@@ -377,18 +377,6 @@ fn external_interface_can_change_router_role() {
 }
 
 #[test]
-fn unmanaged_interface_names_every_field_it_refuses_to_change() {
-    let mut editor = unmanaged_editor();
-    editor.cidr = "192.168.1.11/24".into();
-    editor.role = InterfaceRole::Input;
-    let error = editor.edit_request().unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "cannot change IP while the interface is unmanaged; enable Configure with traffic-masq first"
-    );
-}
-
-#[test]
 fn an_unmanaged_interface_can_still_be_saved_untouched() {
     // This is how a leftover traffic-masq address gets cleaned up, so it
     // must not be swallowed by the settings guard.

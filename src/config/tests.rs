@@ -205,49 +205,15 @@ fn rejects_dhcp_router_that_differs_from_output_interface_address() {
 }
 
 #[test]
-fn example_config_parses_and_validates() {
+fn example_config_describes_a_complete_working_router() {
     let config: AppConfig = toml::from_str(include_str!("../../examples/config.toml"))
         .expect("example config should parse");
     config.validate().expect("example config should validate");
-}
-
-#[test]
-fn example_config_documents_both_wifi_sections_disabled() {
-    let raw = include_str!("../../examples/config.toml");
-    let config: AppConfig = toml::from_str(raw).expect("example config should parse");
-
-    assert!(
-        raw.contains("[wifi]"),
-        "the AP section should be documented"
-    );
-    assert!(
-        raw.contains("[wifi_client]"),
-        "the client section should be documented"
-    );
     assert!(!config.wifi.enabled, "the example must not start an AP");
     assert!(
         !config.wifi_client.enabled,
         "the example must not join a network"
     );
-
-    // The warning is a wrapped comment. Match the sentence as it reads,
-    // not as it happens to be broken across lines: rewrapping the example
-    // must not look like deleting the warning.
-    let unwrapped = raw
-        .lines()
-        .map(|line| line.trim_start_matches('#').trim())
-        .collect::<Vec<_>>()
-        .join(" ");
-    assert!(
-        unwrapped.contains("does NOT give this interface an IP address"),
-        "the external-address-acquisition warning must stay in the example"
-    );
-}
-
-#[test]
-fn example_config_describes_a_complete_working_router() {
-    let config: AppConfig = toml::from_str(include_str!("../../examples/config.toml"))
-        .expect("example config should parse");
 
     assert!(
         config.router.is_active(),

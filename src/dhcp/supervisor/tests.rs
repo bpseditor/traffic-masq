@@ -15,32 +15,11 @@ fn example_config_creates_wlan0_service() {
     assert_eq!(specs.len(), 1);
     assert_eq!(specs[0].interface, "wlan0");
     assert_eq!(specs[0].server_ip, Ipv4Addr::new(192, 168, 50, 1));
+    assert_eq!(specs[0].router, specs[0].server_ip);
     assert_eq!(specs[0].prefix_len, 24);
     assert_eq!(specs[0].pool_start, Ipv4Addr::new(192, 168, 50, 100));
     assert_eq!(specs[0].pool_end, Ipv4Addr::new(192, 168, 50, 200));
     assert_eq!(specs[0].lease_seconds, 86_400);
-}
-
-#[test]
-fn service_spec_is_derived_from_the_complete_interface_config() {
-    let config: AppConfig = toml::from_str(include_str!("../../../examples/config.toml"))
-        .expect("example config should parse");
-    let interface = config
-        .network
-        .interfaces
-        .get("wlan0")
-        .expect("wlan0 config");
-
-    let spec = DhcpServiceSpec::from_interface_config(
-        "wlan0",
-        interface,
-        config.dhcp.default_lease_seconds,
-    )
-    .expect("valid service")
-    .expect("DHCP should be enabled");
-
-    assert_eq!(spec.server_ip, interface.ipv4.expect("IPv4").addr());
-    assert_eq!(spec.router, spec.server_ip);
 }
 
 #[test]

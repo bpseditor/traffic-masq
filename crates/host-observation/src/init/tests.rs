@@ -16,7 +16,6 @@ fn advice_formatting_contains_relevant_commands_for_managers() {
     assert!(advice.contains("connman"));
     assert!(advice.contains("dhcpcd"));
     assert!(advice.contains("denyinterfaces wlp1s0"));
-    assert!(advice.contains("wlp1s0"));
 }
 
 #[test]
