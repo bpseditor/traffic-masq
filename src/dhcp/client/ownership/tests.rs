@@ -402,26 +402,14 @@ async fn pending_crash_state_is_not_adopted_but_cleanup_state_recovers() {
 }
 
 #[tokio::test]
-async fn mac_mismatch_on_a_present_index_prevents_adopt_and_cleanup() {
+async fn mac_rotation_without_kernel_state_retires_the_journal() {
     let network = FakeNetwork::new();
     let (_dir, store, applier) = fixture(network.clone());
-    let mut record = lease();
-    record.state = DhcpClientLeaseState::Bound;
-    store.save(&record).unwrap();
-    *network.mac.lock().unwrap() = vec![9; 6];
-    assert!(matches!(
-        applier.adopt("eth0", 1).await,
-        Err(OwnershipError::Conflict(
-            OwnershipConflict::InterfaceIdentity { .. }
-        ))
-    ));
-    assert!(matches!(
-        applier.cleanup("eth0").await,
-        Err(OwnershipError::Conflict(
-            OwnershipConflict::InterfaceIdentity { .. }
-        ))
-    ));
-    assert!(store.load("eth0").unwrap().is_some());
+    store.save(&lease()).unwrap();
+    *network.mac.lock().unwrap() = vec![2, 0, 0, 0, 0, 9];
+    assert!(applier.adopt("eth0", 1).await.unwrap().is_none());
+    applier.cleanup("eth0").await.unwrap();
+    assert!(store.load("eth0").unwrap().is_none());
 }
 
 #[tokio::test]
@@ -739,4 +727,41 @@ async fn subnet_route_collision_preserves_both_interfaces_through_renewal_and_cl
     );
     applier.cleanup("eth0").await.unwrap();
     assert_eq!(*network.routes.lock().unwrap(), vec![existing]);
+}
+
+#[tokio::test]
+async fn mac_rotation_retires_old_lease_and_allows_fresh_acquisition() {
+    for operation in ["adopt", "cleanup", "suspend"] {
+        let network = FakeNetwork::new();
+        let (_dir, store, applier) = fixture(network.clone());
+        applier.apply(lease()).await.unwrap();
+        *network.mac.lock().unwrap() = vec![2, 0, 0, 0, 0, 9];
+        match operation {
+            "adopt" => assert!(applier.adopt("eth0", 1).await.unwrap().is_none()),
+            "suspend" => assert!(applier.suspend("eth0", 1).await.unwrap().is_none()),
+            _ => applier.cleanup("eth0").await.unwrap(),
+        }
+        assert!(store.load("eth0").unwrap().is_none());
+        assert!(network.addresses.lock().unwrap().is_empty());
+        assert!(network.routes.lock().unwrap().is_empty());
+        let mut fresh = lease();
+        fresh.hardware_address = network.mac.lock().unwrap().clone();
+        applier.apply(fresh).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn mac_rotation_preserves_foreign_replacements() {
+    let network = FakeNetwork::new();
+    let (_dir, store, applier) = fixture(network.clone());
+    applier.apply(lease()).await.unwrap();
+    network.addresses.lock().unwrap()[0].protocol = None;
+    for route in network.routes.lock().unwrap().iter_mut() {
+        route.protocol = 99;
+    }
+    *network.mac.lock().unwrap() = vec![2, 0, 0, 0, 0, 9];
+    applier.cleanup("eth0").await.unwrap();
+    assert!(store.load("eth0").unwrap().is_none());
+    assert!(!network.addresses.lock().unwrap().is_empty());
+    assert!(!network.routes.lock().unwrap().is_empty());
 }

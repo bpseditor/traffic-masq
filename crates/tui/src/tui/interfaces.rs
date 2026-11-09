@@ -631,7 +631,7 @@ pub(crate) fn render_editor(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mu
             &editor.cidr,
             editor.field == InterfaceEditorField::Cidr,
             editor.cursor,
-            editor.managed,
+            editor.managed && !editor.randomize_mac,
             Style::default().fg(theme::ACCENT),
         ),
     ];
@@ -734,7 +734,7 @@ pub(crate) fn render_editor(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mu
             &editor.mac_address,
             editor.field == InterfaceEditorField::MacAddress,
             editor.cursor,
-            editor.managed,
+            editor.managed && !editor.randomize_mac,
             Style::default().fg(theme::ACCENT),
         ));
         if let Err(error) = editor.parsed_mac_address() {
@@ -744,7 +744,11 @@ pub(crate) fn render_editor(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mu
             ));
         }
         lines.push(row(
-            "Generate random MAC (Enter)",
+            if editor.randomize_mac {
+                "Generate static MAC (disabled: automatic MAC enabled)"
+            } else {
+                "Generate random MAC (Enter)"
+            },
             InterfaceEditorField::RandomizeMac,
         ));
     }
@@ -760,6 +764,8 @@ pub(crate) fn render_editor(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mu
         InterfaceEditorField::Role if editor.wifi_concurrent_support.as_ref().is_some_and(|s| s.supported) => "Enter/Space: None → Input → Output → Input + Output. Combined role receives Wi-Fi and creates a virtual AP; channel follows the uplink.",
         InterfaceEditorField::Role => "Enter/Space changes router participation. Input + Output requires verified Wi-Fi AP + station support.",
         InterfaceEditorField::GenerateMac => "Enter/Space toggles automatic generation. Uncheck to use a static MAC from Advanced.",
+        InterfaceEditorField::MacAddress | InterfaceEditorField::RandomizeMac if editor.randomize_mac =>
+            "Static MAC editing disabled: turn off automatic MAC generation first.",
         InterfaceEditorField::MacAddress | InterfaceEditorField::RandomizeMac if !editor.managed =>
             "MAC editing disabled: enable Configure with traffic-masq first.",
         InterfaceEditorField::MacAddress | InterfaceEditorField::RandomizeMac =>
@@ -1621,6 +1627,18 @@ pub(crate) async fn handle_editor_key(app: &mut TuiApp, key: KeyCode, client: &A
     }
 
     let mut unmanaged_ip_attempt = false;
+    if editor.randomize_mac
+        && matches!(
+            editor.field,
+            InterfaceEditorField::MacAddress | InterfaceEditorField::RandomizeMac
+        )
+        && !matches!(
+            key,
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Up | KeyCode::Down | KeyCode::Esc
+        )
+    {
+        return;
+    }
     let mut unmanaged_mac_attempt = false;
 
     match key {
@@ -1711,13 +1729,14 @@ pub(crate) async fn handle_editor_key(app: &mut TuiApp, key: KeyCode, client: &A
                 if !editor.wifi_concurrent && !virtual_ap {
                     editor.randomize_mac = !editor.randomize_mac;
                     if editor.randomize_mac {
+                        editor.mac_address.clear();
                         editor.managed = true;
                     }
                 }
             }
             InterfaceEditorField::Advanced => editor.advanced = !editor.advanced,
             InterfaceEditorField::RandomizeMac => {
-                if virtual_ap {
+                if virtual_ap || editor.randomize_mac {
                     return;
                 }
                 if editor.managed {
@@ -1749,6 +1768,7 @@ pub(crate) async fn handle_editor_key(app: &mut TuiApp, key: KeyCode, client: &A
         other
             if editor.field == InterfaceEditorField::MacAddress
                 && editor.managed
+                && !editor.randomize_mac
                 && !virtual_ap =>
         {
             super::input::TextEditor::new(&mut editor.mac_address, &mut editor.cursor)

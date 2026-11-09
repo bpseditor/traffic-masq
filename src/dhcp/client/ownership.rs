@@ -420,6 +420,24 @@ impl DhcpClientOwnershipApplier {
         let Some(current) = interfaces.iter().find(|item| item.name == lease.interface) else {
             return Ok(false);
         };
+        if current.index == lease.interface_index {
+            let hardware = self
+                .network
+                .hardware_address(&lease.interface)
+                .await
+                .map_err(OwnershipError::Network)?;
+            if hardware != lease.hardware_address {
+                // MAC rotation invalidates DHCP memory, but does not remove the
+                // netdev's addresses/routes. Delete only exact journaled resources;
+                // foreign replacements are preserved by complete matching.
+                self.remove_owned_kernel_state(lease).await?;
+                self.verify_absent(lease).await?;
+                self.store.remove(&lease.interface)?;
+                tracing::info!(interface = %lease.interface,
+                    "retired DHCP ownership after MAC rotation; fresh acquisition required");
+                return Ok(true);
+            }
+        }
         if current.index == lease.interface_index
             || interfaces
                 .iter()

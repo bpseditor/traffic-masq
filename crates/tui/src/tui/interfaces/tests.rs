@@ -561,7 +561,7 @@ async fn random_mac_is_local_unicast_and_kept_in_the_apply_request() {
 }
 
 #[tokio::test]
-async fn editing_mac_text_preserves_automatic_mac_policy() {
+async fn automatic_mac_policy_blocks_manual_mac_editing() {
     let mut editor = default_route_editor(true);
     editor.field = InterfaceEditorField::MacAddress;
     editor.randomize_mac = true;
@@ -596,7 +596,7 @@ async fn editing_mac_text_preserves_automatic_mac_policy() {
         handle_editor_key(&mut app, key, &client).await;
         let editor = app.interface_ui.editor.as_ref().unwrap();
         assert!(editor.randomize_mac, "policy changed after {key:?}");
-        assert_ne!(editor.mac_address, previous_mac);
+        assert_eq!(editor.mac_address, previous_mac);
     }
 }
 
