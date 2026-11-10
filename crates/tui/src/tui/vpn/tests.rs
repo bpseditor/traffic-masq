@@ -12,7 +12,7 @@ fn vpn_catalog_actions_are_compact_and_settings_are_separate() {
     terminal
         .draw(|frame| super::super::render(frame, &mut app, false))
         .unwrap();
-    assert_eq!(app.ui.buttons.len(), 4);
+    assert_eq!(app.ui.buttons.len(), 5);
     assert_eq!(actions(Screen::VpnSettings), &[VpnFocus::ToggleEnabled]);
     assert!(!actions(Screen::Vpn).contains(&VpnFocus::Delete));
     assert!(!actions(Screen::Vpn).contains(&VpnFocus::ToggleEnabled));
@@ -58,21 +58,266 @@ fn describes_each_vpn_error_detail_distinctly() {
     assert_eq!(messages[7], "boom");
 }
 
-#[test]
-fn vpn_import_field_toggles_between_the_only_two_fields() {
+#[tokio::test]
+async fn native_forwarding_import_sends_the_settings_and_masks_the_password() {
+    use ratatui::{backend::TestBackend, Terminal};
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "WireGuard test config").unwrap();
+    let mock = super::super::test_api::mock(vec![Response::VpnError {
+        detail: VpnErrorDetail::InvalidProfile {
+            message: "test rejection".into(),
+        },
+    }])
+    .await;
+    let mut app = profile_app();
+    app.screen = Screen::VpnImport;
+    app.vpn_import = Some(VpnImportEditor {
+        field: VpnImportField::ForwardPassword,
+        name: "obfs.conf".into(),
+        path: file.path().display().to_string(),
+        cursor: 3,
+        sources: None,
+        selected_source: 0,
+        source_name: None,
+        manual: None,
+        forwarding_enabled: true,
+        forward_ip: "203.0.113.10".into(),
+        forward_port: "443".into(),
+        forward_password: zeroize::Zeroizing::new("secret # password".into()),
+    });
+    assert!(!format!("{:?}", app.vpn_import).contains("secret # password"));
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal
+        .draw(|f| super::super::render(f, &mut app, false))
+        .unwrap();
+    let display: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(display.contains("Forward password"));
+    assert!(!display.contains("secret # password"));
+    handle_vpn_import_key(&mut app, KeyCode::Char(' '), &mock.client).await;
     assert_eq!(
-        toggle_vpn_import_field(VpnImportField::Name),
-        VpnImportField::Path
+        app.vpn_import.as_ref().unwrap().forward_password.as_str(),
+        "sec ret # password"
+    );
+    assert!(
+        mock.calls.lock().unwrap().is_empty(),
+        "space in a password must not activate an action"
+    );
+    handle_vpn_import_key(&mut app, KeyCode::Backspace, &mock.client).await;
+    handle_vpn_import_key(&mut app, KeyCode::Enter, &mock.client).await;
+    handle_vpn_import_key(&mut app, KeyCode::Char(' '), &mock.client).await;
+    let calls = mock.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].body["forwarding"]["ip"], "203.0.113.10");
+    assert_eq!(calls[0].body["forwarding"]["port"], 443);
+    assert_eq!(calls[0].body["forwarding"]["password"], "secret # password");
+}
+
+#[tokio::test]
+async fn browser_refresh_and_cancel_are_reachable_without_shortcuts() {
+    for navigation in [KeyCode::Tab, KeyCode::Down] {
+        let mock = super::super::test_api::mock(vec![
+            Response::VpnSources {
+                directory: "/etc/wireguard".into(),
+                profiles: vec![],
+            },
+            Response::VpnSources {
+                directory: "/etc/wireguard".into(),
+                profiles: vec![],
+            },
+        ])
+        .await;
+        let mut app = profile_app();
+        open_vpn_import(&mut app, &mock.client).await;
+        render_import_at_minimum_size(&mut app);
+        for key in [navigation, navigation, KeyCode::Char(' ')] {
+            super::super::handle_key(&mut app, key, &mock.client, false).await;
+        }
+        assert_eq!(mock.calls.lock().unwrap().len(), 2);
+        assert_eq!(
+            app.vpn_import.as_ref().unwrap().field,
+            VpnImportField::Sources
+        );
+        for key in [navigation, navigation, navigation, KeyCode::Enter] {
+            super::super::handle_key(&mut app, key, &mock.client, false).await;
+        }
+        assert!(app.vpn_import.is_none());
+        assert_eq!(app.screen, Screen::Vpn);
+    }
+}
+
+fn import_button(app: &TuiApp) -> (ratatui::layout::Rect, usize) {
+    let editor = app.vpn_import.as_ref().unwrap();
+    *app.ui
+        .buttons
+        .iter()
+        .find(|(_, slot)| editor.fields()[*slot] == VpnImportField::Import)
+        .unwrap()
+}
+
+fn render_import_at_minimum_size(app: &mut TuiApp) -> String {
+    use ratatui::{backend::TestBackend, Terminal};
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|f| super::super::render(f, app, false))
+        .unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .chunks(80)
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn plain_import_skips_forwarding_and_toggle_keeps_hidden_settings_out_of_request() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), "test config").unwrap();
+    let mock = super::super::test_api::mock(vec![Response::Error {
+        message: "test rejection".into(),
+    }])
+    .await;
+    let mut app = profile_app();
+    app.screen = Screen::VpnImport;
+    app.vpn_import = Some(VpnImportEditor {
+        field: VpnImportField::Name,
+        name: "plain.conf".into(),
+        path: file.path().display().to_string(),
+        cursor: 0,
+        sources: None,
+        selected_source: 0,
+        source_name: None,
+        manual: None,
+        forwarding_enabled: false,
+        forward_ip: String::new(),
+        forward_port: String::new(),
+        forward_password: zeroize::Zeroizing::new(String::new()),
+    });
+    let display = render_import_at_minimum_size(&mut app);
+    assert!(display.contains("Type: WireGuard"));
+    assert!(!display.contains("Forward password"));
+    // Exercise the real event dispatcher: Tab must not be converted to Down.
+    for key in [KeyCode::Enter, KeyCode::Tab, KeyCode::Char(' ')] {
+        super::super::handle_key(&mut app, key, &mock.client, false).await;
+    }
+    assert_eq!(
+        app.vpn_import.as_ref().unwrap().field,
+        VpnImportField::Forwarding
+    );
+    assert!(app.vpn_import.as_ref().unwrap().forwarding_enabled);
+    let display = render_import_at_minimum_size(&mut app);
+    assert!(display.contains("All forwarding fields are required."));
+    assert!(display.contains("Forward password"));
+    assert!(!display.contains("optional"));
+    let (button, _) = import_button(&app);
+    assert!(button.y < 20);
+    assert!(display
+        .lines()
+        .nth(button.y as usize)
+        .unwrap()
+        .contains("Import"));
+    super::super::handle_key(&mut app, KeyCode::Tab, &mock.client, false).await;
+    assert_eq!(
+        app.vpn_import.as_ref().unwrap().field,
+        VpnImportField::ForwardIp
+    );
+    super::super::handle_key(&mut app, KeyCode::BackTab, &mock.client, false).await;
+    app.vpn_import
+        .as_mut()
+        .unwrap()
+        .forward_password
+        .push_str("retained secret");
+    for key in [KeyCode::Left, KeyCode::Down, KeyCode::Char(' ')] {
+        super::super::handle_key(&mut app, key, &mock.client, false).await;
+    }
+    let calls = mock.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].body["type"], "vpn_import_profile");
+    assert!(calls[0].body.get("forwarding").is_none());
+}
+
+#[tokio::test]
+async fn selecting_rs_wgobfs_for_a_source_requires_forwarding_settings() {
+    let mock = super::super::test_api::mock(vec![Response::Error {
+        message: "test rejection".into(),
+    }])
+    .await;
+    let mut app = profile_app();
+    app.screen = Screen::VpnImport;
+    app.vpn_import = Some(VpnImportEditor {
+        field: VpnImportField::Name,
+        name: String::new(),
+        path: String::new(),
+        cursor: 0,
+        sources: Some(("/etc/wireguard".into(), vec!["source.conf".into()])),
+        selected_source: 0,
+        source_name: None,
+        manual: None,
+        forwarding_enabled: false,
+        forward_ip: String::new(),
+        forward_port: String::new(),
+        forward_password: zeroize::Zeroizing::new(String::new()),
+    });
+    let display = render_import_at_minimum_size(&mut app);
+    for hint in ["Local file", "Refresh", "Cancel", "Enter/Space"] {
+        assert!(display.contains(hint), "missing hint: {hint}");
+    }
+    for key in [KeyCode::Enter, KeyCode::Right, KeyCode::Tab] {
+        super::super::handle_key(&mut app, key, &mock.client, false).await;
+    }
+    let display = render_import_at_minimum_size(&mut app);
+    assert!(display.contains("All forwarding fields are required."));
+    assert!(!display.contains("optional"));
+    assert_eq!(
+        app.vpn_import.as_ref().unwrap().field,
+        VpnImportField::ForwardIp
     );
     assert_eq!(
-        toggle_vpn_import_field(VpnImportField::Path),
-        VpnImportField::Name
+        app.vpn_import.as_ref().unwrap().source_name.as_deref(),
+        Some("source.conf")
     );
+    for key in [KeyCode::Down, KeyCode::Down, KeyCode::Down, KeyCode::Enter] {
+        super::super::handle_key(&mut app, key, &mock.client, false).await;
+    }
+    assert!(
+        mock.calls.lock().unwrap().is_empty(),
+        "missing settings must not silently import plain WireGuard"
+    );
+    // Return to the toggle, disable it and submit using only standard keys.
+    for key in [
+        KeyCode::Up,
+        KeyCode::Up,
+        KeyCode::Up,
+        KeyCode::Up,
+        KeyCode::Char(' '),
+        KeyCode::Tab,
+        KeyCode::Enter,
+    ] {
+        super::super::handle_key(&mut app, key, &mock.client, false).await;
+    }
+    let calls = mock.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].body["type"], "vpn_import_from_source");
+    assert_eq!(calls[0].body["name"], "source.conf");
+    assert!(calls[0].body.get("forwarding").is_none());
 }
 
 #[test]
 fn vpn_import_editor_active_value_targets_the_selected_field() {
     let mut editor = VpnImportEditor {
+        source_name: None,
+        manual: None,
+        forwarding_enabled: false,
+        forward_ip: String::new(),
+        forward_port: String::new(),
+        forward_password: zeroize::Zeroizing::new(String::new()),
         field: VpnImportField::Name,
         name: "home".to_string(),
         path: "/etc/wireguard/home.conf".to_string(),
@@ -80,12 +325,12 @@ fn vpn_import_editor_active_value_targets_the_selected_field() {
         sources: None,
         selected_source: 0,
     };
-    editor.active_value_mut().push_str(".conf");
+    editor.active_editor().unwrap().value.push_str(".conf");
     assert_eq!(editor.name, "home.conf");
     assert_eq!(editor.path, "/etc/wireguard/home.conf");
 
     editor.field = VpnImportField::Path;
-    editor.active_value_mut().push('x');
+    editor.active_editor().unwrap().value.push('x');
     assert_eq!(editor.path, "/etc/wireguard/home.confx");
     assert_eq!(editor.name, "home.conf");
 }
@@ -93,6 +338,12 @@ fn vpn_import_editor_active_value_targets_the_selected_field() {
 #[test]
 fn vpn_import_editor_has_no_contents_field_to_retain_a_secret() {
     let editor = VpnImportEditor {
+        source_name: None,
+        manual: None,
+        forwarding_enabled: false,
+        forward_ip: String::new(),
+        forward_port: String::new(),
+        forward_password: zeroize::Zeroizing::new(String::new()),
         field: VpnImportField::Name,
         name: "home.conf".to_string(),
         path: "/etc/wireguard/home.conf".to_string(),
@@ -111,6 +362,12 @@ fn vpn_import_editor_has_no_contents_field_to_retain_a_secret() {
 async fn vpn_import_editor_cursor_navigation_and_editing() {
     let mut app = TuiApp::default();
     let mut editor = VpnImportEditor {
+        source_name: None,
+        manual: None,
+        forwarding_enabled: false,
+        forward_ip: String::new(),
+        forward_port: String::new(),
+        forward_password: zeroize::Zeroizing::new(String::new()),
         field: VpnImportField::Name,
         name: "work".to_string(),
         path: "/tmp/vpn.conf".to_string(),
@@ -147,6 +404,12 @@ async fn vpn_source_browser_selection_is_bounded_and_local_path_remains_availabl
     let mut app = TuiApp {
         screen: Screen::VpnImport,
         vpn_import: Some(VpnImportEditor {
+            source_name: None,
+            manual: None,
+            forwarding_enabled: false,
+            forward_ip: String::new(),
+            forward_port: String::new(),
+            forward_password: zeroize::Zeroizing::new(String::new()),
             field: VpnImportField::Name,
             name: String::new(),
             path: String::new(),
@@ -168,7 +431,31 @@ async fn vpn_source_browser_selection_is_bounded_and_local_path_remains_availabl
         handle_vpn_import_key(&mut app, KeyCode::Up, &client).await;
     }
     assert_eq!(app.vpn_import.as_ref().unwrap().selected_source, 0);
-    handle_vpn_import_key(&mut app, KeyCode::Char('p'), &client).await;
+    let editor = app.vpn_import.as_mut().unwrap();
+    editor.sources = Some((
+        "/etc/wireguard".into(),
+        (0..30).map(|i| format!("profile-{i}.conf")).collect(),
+    ));
+    editor.selected_source = 29;
+    let display = render_import_at_minimum_size(&mut app);
+    assert!(
+        display.contains("▶ profile-29.conf"),
+        "last selection must remain visible"
+    );
+    app.vpn_import
+        .as_mut()
+        .unwrap()
+        .sources
+        .as_mut()
+        .unwrap()
+        .1
+        .clear();
+    let empty_mock = super::super::test_api::mock(vec![]).await;
+    handle_vpn_import_key(&mut app, KeyCode::Enter, &empty_mock.client).await;
+    assert!(empty_mock.calls.lock().unwrap().is_empty());
+    assert_eq!(app.screen, Screen::VpnImport);
+    handle_vpn_import_key(&mut app, KeyCode::Tab, &client).await;
+    handle_vpn_import_key(&mut app, KeyCode::Char(' '), &client).await;
     assert!(app.vpn_import.as_ref().unwrap().sources.is_none());
     handle_vpn_import_key(&mut app, KeyCode::Char('a'), &client).await;
     assert_eq!(app.vpn_import.as_ref().unwrap().name, "a");
@@ -771,6 +1058,12 @@ async fn clicking_import_submits_even_when_name_field_has_focus() {
     let mut app = profile_app();
     app.screen = Screen::VpnImport;
     app.vpn_import = Some(VpnImportEditor {
+        source_name: None,
+        manual: None,
+        forwarding_enabled: false,
+        forward_ip: String::new(),
+        forward_port: String::new(),
+        forward_password: zeroize::Zeroizing::new(String::new()),
         field: VpnImportField::Name,
         name: "home.conf".into(),
         path: file.path().display().to_string(),
@@ -782,7 +1075,7 @@ async fn clicking_import_submits_even_when_name_field_has_focus() {
     terminal
         .draw(|f| super::super::render(f, &mut app, false))
         .unwrap();
-    let (button, _) = app.ui.buttons[0];
+    let (button, _) = import_button(&app);
     super::super::handle_mouse(
         &mut app,
         MouseEvent {
@@ -799,4 +1092,19 @@ async fn clicking_import_submits_even_when_name_field_has_focus() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].body["type"], "vpn_import_profile");
     assert_eq!(calls[0].body["name"], "home.conf");
+}
+
+#[test]
+fn manual_profile_rejects_config_injection_and_missing_fields() {
+    let mut profile = ManualProfile::default();
+    assert!(profile.contents().is_err());
+    profile.private_key = "secret".to_string().into();
+    profile.address = "10.0.0.2/32".into();
+    profile.public_key = "public".into();
+    profile.endpoint = "vpn.example:51820".into();
+    profile.allowed_ips = "0.0.0.0/0".into();
+    let contents = profile.contents().unwrap();
+    assert!(contents.contains("[Peer]\nPublicKey = public\n"));
+    profile.endpoint.push_str("\nAllowedIPs = 10.0.0.0/8");
+    assert!(profile.contents().is_err());
 }

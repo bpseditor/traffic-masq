@@ -212,6 +212,12 @@ async fn tab_focus_and_modified_keys_are_consistent() {
 
     app.screen = Screen::VpnImport;
     app.vpn_import = Some(VpnImportEditor {
+        source_name: None,
+        manual: None,
+        forwarding_enabled: false,
+        forward_ip: String::new(),
+        forward_port: String::new(),
+        forward_password: zeroize::Zeroizing::new(String::new()),
         field: vpn::VpnImportField::Name,
         name: String::new(),
         path: String::new(),
@@ -1116,6 +1122,12 @@ async fn control_shortcuts_preserve_text_and_modal_focus() {
     let mut app = TuiApp {
         screen: Screen::VpnImport,
         vpn_import: Some(VpnImportEditor {
+            source_name: None,
+            manual: None,
+            forwarding_enabled: false,
+            forward_ip: String::new(),
+            forward_port: String::new(),
+            forward_password: zeroize::Zeroizing::new(String::new()),
             field: vpn::VpnImportField::Name,
             name: "draft".into(),
             path: String::new(),
@@ -1360,4 +1372,50 @@ fn pending_labels_keep_contrast_on_filled_empty_and_recovery_gauges() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn dashboard_inventory_does_not_refetch_interface_configuration() {
+    let observed = InterfaceStatus {
+        interface: traffic_masq_protocol::NetworkInterfaceView {
+            index: 1,
+            name: "eth0".into(),
+            is_up: true,
+            rx_bytes: 0,
+            tx_bytes: 0,
+            is_wireless: false,
+        },
+        ipv4_addresses: vec![],
+        owned_ipv4_addresses: None,
+        has_default_route: false,
+    };
+    let mock = test_api::mock(vec![
+        Response::InterfaceInventory {
+            base_config: None,
+            revision: 7,
+            interfaces: vec![traffic_masq_protocol::InterfaceInventoryEntry {
+                name: "eth0".into(),
+                observed: Some(observed),
+                configured: None,
+                config_source: traffic_masq_protocol::InterfaceConfigSource::None,
+                presence: traffic_masq_protocol::InterfacePresence::Missing,
+                readiness: traffic_masq_protocol::InterfaceReadiness::Disabled,
+                blockers: vec![],
+                observation_stale: false,
+                suppressed: false,
+                references: vec![],
+            }],
+            suppressed_interfaces: vec![],
+            observation_error: None,
+        },
+        Response::PendingNetworkChanges { changes: vec![] },
+        Response::Routes { routes: vec![] },
+        Response::VpnConfig { enabled: false },
+    ])
+    .await;
+    let data = load_daemon_dashboard(&mock.client).await;
+    assert!(data.error.is_none(), "{:?}", data.error);
+    assert_eq!(data.interfaces.len(), 1);
+    assert_eq!(data.intent_revision, Some(7));
+    assert_eq!(mock.calls.lock().unwrap().len(), 4);
 }

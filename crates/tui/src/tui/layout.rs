@@ -474,7 +474,12 @@ pub(crate) fn screen_help_pairs(screen: Screen) -> Vec<(&'static str, &'static s
             ("type", "edit value"),
             ("Esc", "back"),
         ],
-        Screen::VpnImport | Screen::SettingsPassword => vec![
+        Screen::VpnImport => vec![
+            ("↑/↓/Tab", "focus"),
+            ("Enter/Space", "action"),
+            ("Esc", "cancel"),
+        ],
+        Screen::SettingsPassword => vec![
             ("↑/↓", "field"),
             ("type", "value"),
             ("Enter", "next/submit"),

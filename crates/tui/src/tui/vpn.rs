@@ -1,7 +1,7 @@
 use crossterm::event::KeyCode;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::Style;
+use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 use zeroize::Zeroize;
 
@@ -37,6 +37,7 @@ pub(crate) enum VpnFocus {
     Connect,
     Details,
     Import,
+    Create,
     Settings,
     Delete,
     Route,
@@ -50,6 +51,7 @@ fn actions(screen: Screen) -> &'static [VpnFocus] {
         _ => &[
             VpnFocus::Connect,
             VpnFocus::Details,
+            VpnFocus::Create,
             VpnFocus::Import,
             VpnFocus::Settings,
         ],
@@ -120,11 +122,53 @@ fn connection_state(app: &TuiApp, name: &str) -> &'static str {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VpnImportField {
+    Sources,
+    PrivateKey,
+    Address,
+    PublicKey,
+    Endpoint,
+    AllowedIps,
+    LocalFile,
+    Refresh,
+    Forwarding,
+    Import,
+    Cancel,
     Name,
     Path,
+    ForwardIp,
+    ForwardPort,
+    ForwardPassword,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Default)]
+pub(crate) struct ManualProfile {
+    private_key: zeroize::Zeroizing<String>,
+    address: String,
+    public_key: String,
+    endpoint: String,
+    allowed_ips: String,
+}
+
+impl ManualProfile {
+    fn contents(&self) -> Result<String, &'static str> {
+        let values = [
+            &*self.private_key,
+            &self.address,
+            &self.public_key,
+            &self.endpoint,
+            &self.allowed_ips,
+        ];
+        if values
+            .iter()
+            .any(|v| v.trim().is_empty() || v.contains(['\n', '\r', '\0']))
+        {
+            return Err("Complete all WireGuard fields with single-line values");
+        }
+        Ok(format!("[Interface]\nPrivateKey = {}\nAddress = {}\n[Peer]\nPublicKey = {}\nEndpoint = {}\nAllowedIPs = {}\n", self.private_key.trim(), self.address.trim(), self.public_key.trim(), self.endpoint.trim(), self.allowed_ips.trim()))
+    }
+}
+
+#[derive(Clone)]
 pub(crate) struct VpnImportEditor {
     pub(crate) field: VpnImportField,
     pub(crate) name: String,
@@ -132,34 +176,158 @@ pub(crate) struct VpnImportEditor {
     pub(crate) cursor: usize,
     pub(crate) sources: Option<(String, Vec<String>)>,
     pub(crate) selected_source: usize,
+    pub(crate) source_name: Option<String>,
+    pub(crate) manual: Option<ManualProfile>,
+    pub(crate) forwarding_enabled: bool,
+    pub(crate) forward_ip: String,
+    pub(crate) forward_port: String,
+    pub(crate) forward_password: zeroize::Zeroizing<String>,
+}
+
+impl std::fmt::Debug for VpnImportEditor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VpnImportEditor")
+            .field("name", &self.name)
+            .field("path", &self.path)
+            .field("forward_ip", &self.forward_ip)
+            .field("forward_port", &self.forward_port)
+            .field("forward_password", &"[REDACTED]")
+            .finish_non_exhaustive()
+    }
 }
 
 impl VpnImportEditor {
-    #[allow(dead_code)]
-    fn active_value_mut(&mut self) -> &mut String {
-        match self.field {
-            VpnImportField::Name => &mut self.name,
-            VpnImportField::Path => &mut self.path,
+    fn fields(&self) -> &[VpnImportField] {
+        use VpnImportField::*;
+        if self.manual.is_some() {
+            return if self.forwarding_enabled {
+                &[
+                    Name,
+                    Forwarding,
+                    PrivateKey,
+                    Address,
+                    PublicKey,
+                    Endpoint,
+                    AllowedIps,
+                    ForwardIp,
+                    ForwardPort,
+                    ForwardPassword,
+                    Import,
+                    Cancel,
+                ]
+            } else {
+                &[
+                    Name, Forwarding, PrivateKey, Address, PublicKey, Endpoint, AllowedIps, Import,
+                    Cancel,
+                ]
+            };
+        }
+        if self.sources.is_some() {
+            return &[Sources, LocalFile, Refresh, Cancel];
+        }
+        match (self.source_name.is_some(), self.forwarding_enabled) {
+            (false, false) => &[Name, Path, Forwarding, Import, Cancel],
+            (false, true) => &[
+                Name,
+                Path,
+                Forwarding,
+                ForwardIp,
+                ForwardPort,
+                ForwardPassword,
+                Import,
+                Cancel,
+            ],
+            (true, false) => &[Forwarding, Import, Cancel],
+            (true, true) => &[
+                Forwarding,
+                ForwardIp,
+                ForwardPort,
+                ForwardPassword,
+                Import,
+                Cancel,
+            ],
         }
     }
 
-    pub(crate) fn active_value(&self) -> &str {
+    fn move_field(&mut self, key: KeyCode) {
+        self.field = match key {
+            KeyCode::Tab | KeyCode::BackTab => {
+                super::input::move_wrapped(self.fields(), self.field, key == KeyCode::Tab)
+            }
+            _ => super::input::move_clamped(
+                self.fields(),
+                self.field,
+                matches!(key, KeyCode::Down | KeyCode::Right | KeyCode::Enter),
+            ),
+        };
+        self.reset_cursor();
+    }
+
+    fn toggle_forwarding(&mut self) {
+        self.forwarding_enabled = !self.forwarding_enabled;
+        self.field = VpnImportField::Forwarding;
+        self.reset_cursor();
+    }
+
+    fn open_source(&mut self, forwarding: bool) {
+        let Some(name) = self
+            .sources
+            .as_ref()
+            .and_then(|(_, names)| names.get(self.selected_source))
+            .cloned()
+        else {
+            return;
+        };
+        self.name = name.clone();
+        self.source_name = Some(name);
+        self.sources = None;
+        self.forwarding_enabled = forwarding;
+        self.field = if forwarding {
+            VpnImportField::ForwardIp
+        } else {
+            VpnImportField::Forwarding
+        };
+        self.reset_cursor();
+    }
+
+    pub(crate) fn active_value(&self) -> Option<&str> {
         match self.field {
-            VpnImportField::Name => &self.name,
-            VpnImportField::Path => &self.path,
+            VpnImportField::PrivateKey => Some(&self.manual.as_ref()?.private_key),
+            VpnImportField::Address => Some(&self.manual.as_ref()?.address),
+            VpnImportField::PublicKey => Some(&self.manual.as_ref()?.public_key),
+            VpnImportField::Endpoint => Some(&self.manual.as_ref()?.endpoint),
+            VpnImportField::AllowedIps => Some(&self.manual.as_ref()?.allowed_ips),
+            VpnImportField::Name => Some(&self.name),
+            VpnImportField::Path => Some(&self.path),
+            VpnImportField::ForwardIp => Some(&self.forward_ip),
+            VpnImportField::ForwardPort => Some(&self.forward_port),
+            VpnImportField::ForwardPassword => Some(&self.forward_password),
+            _ => None,
         }
     }
 
     pub(crate) fn reset_cursor(&mut self) {
-        self.cursor = super::input::grapheme_count(self.active_value());
+        self.cursor = self
+            .active_value()
+            .map(super::input::grapheme_count)
+            .unwrap_or(0);
     }
 
-    pub(crate) fn active_editor(&mut self) -> super::input::TextEditor<'_> {
-        let cursor = &mut self.cursor;
-        match self.field {
-            VpnImportField::Name => super::input::TextEditor::new(&mut self.name, cursor),
-            VpnImportField::Path => super::input::TextEditor::new(&mut self.path, cursor),
-        }
+    pub(crate) fn active_editor(&mut self) -> Option<super::input::TextEditor<'_>> {
+        let value = match self.field {
+            VpnImportField::PrivateKey => &mut self.manual.as_mut()?.private_key,
+            VpnImportField::Address => &mut self.manual.as_mut()?.address,
+            VpnImportField::PublicKey => &mut self.manual.as_mut()?.public_key,
+            VpnImportField::Endpoint => &mut self.manual.as_mut()?.endpoint,
+            VpnImportField::AllowedIps => &mut self.manual.as_mut()?.allowed_ips,
+            VpnImportField::Name => &mut self.name,
+            VpnImportField::Path => &mut self.path,
+            VpnImportField::ForwardIp => &mut self.forward_ip,
+            VpnImportField::ForwardPort => &mut self.forward_port,
+            VpnImportField::ForwardPassword => &mut self.forward_password,
+            _ => return None,
+        };
+        Some(super::input::TextEditor::new(value, &mut self.cursor))
     }
 }
 
@@ -340,6 +508,7 @@ pub(crate) fn render_vpn(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut T
             VpnFocus::Connect if standalone_selected(app) => "[Disconnect]",
             VpnFocus::Connect => "[Connect]",
             VpnFocus::Details => "[Open profile]",
+            VpnFocus::Create => "[Create]",
             VpnFocus::Import => "[Import]",
             VpnFocus::Settings => "[VPN settings]",
             VpnFocus::Delete => "[Delete profile]",
@@ -388,111 +557,121 @@ pub(crate) fn render_vpn(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut T
     );
 }
 
-const VPN_IMPORT_SAVE_LABEL: &str = "Import";
-
 pub(crate) fn render_vpn_import(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp) {
+    use VpnImportField::*;
     let Some(editor) = &app.vpn_import else {
         return;
     };
+    let block = panel(if editor.manual.is_some() {
+        "Create VPN profile"
+    } else {
+        "Import VPN profile"
+    });
+    let inner = block.inner(area);
+    let style = Style::default().fg(theme::ACCENT);
+    let mut lines = Vec::new();
+    let mut interactions = Vec::new();
     if let Some((directory, names)) = &editor.sources {
-        let mut lines = vec![
-            Line::styled(
-                format!("WireGuard configs: {directory}"),
-                Style::default().fg(theme::ACCENT),
-            ),
-            Line::from(
-                "Up/Down: select | Enter: import | r: refresh | p: local file | Esc: cancel",
-            ),
-            Line::from(""),
-        ];
+        lines.push(Line::from(format!("WireGuard configs: {directory}")));
+        lines.push(Line::from(
+            "Up/Down: select | Tab: actions | Enter/Space: open",
+        ));
+        let visible_rows = inner.height.saturating_sub(6).max(1) as usize;
+        let start = editor.selected_source.saturating_sub(visible_rows - 1);
         if names.is_empty() {
             lines.push(Line::from(
-                "No .conf files found. Put your WireGuard config in this directory.",
+                "No .conf files found. Use Local file or Refresh.",
             ));
         }
-        let visible_rows = area.height.saturating_sub(5).max(1) as usize;
-        let start = editor.selected_source.saturating_sub(visible_rows - 1);
         for (index, name) in names.iter().enumerate().skip(start).take(visible_rows) {
-            lines.push(Line::styled(
-                format!(
-                    "{} {name}",
-                    if index == editor.selected_source {
-                        "▶"
-                    } else {
-                        " "
-                    }
-                ),
-                Style::default().fg(if index == editor.selected_source {
-                    theme::ACCENT
-                } else {
-                    theme::MUTED
-                }),
+            lines.push(super::layout::field_row(
+                name,
+                editor.field == Sources && index == editor.selected_source,
+                style,
             ));
         }
-        frame.render_widget(
-            Paragraph::new(lines).block(panel("Import WireGuard profile")),
-            area,
-        );
-        return;
+    } else if let Some(source) = &editor.source_name {
+        lines.push(Line::from(format!("Source config: {source}")));
     }
-    let field_line = |label: &str, value: &str, field: VpnImportField| {
-        let active = editor.field == field;
-        let marker = if active { "▶ " } else { "  " };
-        let style = if active {
-            Style::default()
-                .fg(theme::ACCENT)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
+    for (slot, field) in editor.fields().iter().enumerate() {
+        if *field == Sources {
+            continue;
+        }
+        let selected = editor.field == *field;
+        let row = lines.len() as u16;
+        let line = match field {
+            Address | PublicKey | Endpoint | AllowedIps => {
+                let manual = editor.manual.as_ref().unwrap();
+                let (label, value) = match field {
+                    Address => ("Address (CIDR)", &manual.address),
+                    PublicKey => ("Peer public key", &manual.public_key),
+                    Endpoint => ("Endpoint (host:port)", &manual.endpoint),
+                    _ => ("Allowed IPs", &manual.allowed_ips),
+                };
+                super::layout::text_field_row(label, value, selected, editor.cursor, true, style)
+            }
+            Name | Path | ForwardIp | ForwardPort => {
+                let (label, value) = match field {
+                    Name => ("Name", editor.name.as_str()),
+                    Path => ("File path", editor.path.as_str()),
+                    ForwardIp => ("Forward IP", editor.forward_ip.as_str()),
+                    _ => ("Forward port", editor.forward_port.as_str()),
+                };
+                super::layout::text_field_row(label, value, selected, editor.cursor, true, style)
+            }
+            ForwardPassword | PrivateKey => {
+                let (label, value) = if *field == PrivateKey {
+                    (
+                        "Private key: ",
+                        &*editor.manual.as_ref().unwrap().private_key,
+                    )
+                } else {
+                    ("Forward password: ", &*editor.forward_password)
+                };
+                let mut line = super::layout::field_row(label, selected, style);
+                line.spans.extend(super::input::render_masked_with_cursor(
+                    super::input::grapheme_count(value),
+                    editor.cursor,
+                    selected,
+                    '•',
+                    line.style,
+                ));
+                line
+            }
+            _ => {
+                let label = match field {
+                    Forwarding if editor.forwarding_enabled => "Type: WireGuard + wgobfs",
+                    Forwarding => "Type: WireGuard",
+                    Import if editor.manual.is_some() => "Save profile",
+                    Import => "Import",
+                    Cancel => "Cancel",
+                    LocalFile => "Local file",
+                    Refresh => "Refresh",
+                    _ => unreachable!("text fields handled above"),
+                };
+                interactions.push((row, slot));
+                super::layout::field_row(label, selected, style)
+            }
         };
-        let mut spans = vec![Span::styled(format!("{marker}{label}: "), style)];
-        spans.extend(super::input::render_value_with_cursor(
-            value,
-            editor.cursor,
-            active,
-            style,
-        ));
-        Line::from(spans)
-    };
-    let mut lines = vec![
-        field_line("Name", &editor.name, VpnImportField::Name),
-        field_line("File path", &editor.path, VpnImportField::Path),
-        Line::from(""),
-        Line::styled(
-            "Tab: next | Enter: next / import from path | Esc: cancel",
-            Style::default().fg(theme::MUTED),
-        ),
-        Line::styled(
-            "The file is read from this TUI's local filesystem and sent once over the \
-             authenticated API connection; its contents (including the private key) are \
-             never stored by the TUI.",
-            Style::default().fg(theme::MUTED),
-        ),
-        Line::from(""),
-    ];
-
-    let button_row_index = lines.len() as u16;
-    lines.push(Line::styled(
-        VPN_IMPORT_SAVE_LABEL,
-        Style::default()
-            .fg(theme::SELECTED_FG)
-            .bg(theme::SELECTED_BG)
-            .add_modifier(Modifier::BOLD),
+        lines.push(line);
+    }
+    if editor.sources.is_none() && editor.forwarding_enabled {
+        lines.push(Line::from("All forwarding fields are required."));
+    }
+    lines.push(Line::from(
+        "Arrows/Tab: focus | Enter/Space: action | Esc: cancel",
     ));
-
-    let block = panel("Import VPN profile");
-    let inner = block.inner(area);
+    let offset = super::layout::focused_lines_offset(&lines, inner.height) as u16;
+    for (row, slot) in interactions {
+        if row >= offset && row - offset < inner.height {
+            app.ui.buttons.push((
+                Rect::new(inner.x, inner.y + row - offset, inner.width, 1),
+                slot,
+            ));
+        }
+    }
     frame.render_widget(block, area);
-    app.ui.buttons.push((
-        Rect {
-            x: inner.x,
-            y: inner.y + button_row_index,
-            width: VPN_IMPORT_SAVE_LABEL.len() as u16,
-            height: 1,
-        },
-        0,
-    ));
-    frame.render_widget(Paragraph::new(lines), inner);
+    frame.render_widget(Paragraph::new(lines).scroll((offset, 0)), inner);
 }
 
 pub(crate) fn enter_list(app: &mut TuiApp) {
@@ -501,10 +680,12 @@ pub(crate) fn enter_list(app: &mut TuiApp) {
     app.vpn.focus = VpnFocus::List;
 }
 
-pub(crate) fn focus_import_submit(app: &mut TuiApp) {
+pub(crate) fn focus_import_action(app: &mut TuiApp, slot: usize) {
     if let Some(editor) = app.vpn_import.as_mut() {
-        editor.field = VpnImportField::Path;
-        editor.reset_cursor();
+        if let Some(field) = editor.fields().get(slot).copied() {
+            editor.field = field;
+            editor.reset_cursor();
+        }
     }
 }
 
@@ -565,7 +746,7 @@ pub(crate) async fn handle_vpn_key(app: &mut TuiApp, key: KeyCode, client: &ApiC
         }
         KeyCode::Home => app.vpn.selected_profile = 0,
         KeyCode::End => app.vpn.selected_profile = app.vpn.profiles.len().saturating_sub(1),
-        KeyCode::Enter => match app.vpn.focus {
+        KeyCode::Enter | KeyCode::Char(' ') => match app.vpn.focus {
             VpnFocus::Details => {
                 if app.vpn.profiles_known {
                     if let Some(name) = selected_name(app).map(str::to_owned) {
@@ -582,6 +763,26 @@ pub(crate) async fn handle_vpn_key(app: &mut TuiApp, key: KeyCode, client: &ApiC
                 } else {
                     vpn_activate_selected(app, client).await;
                 }
+            }
+            VpnFocus::Create => {
+                app.vpn_import = Some(VpnImportEditor {
+                    field: VpnImportField::Name,
+                    name: String::new(),
+                    path: String::new(),
+                    cursor: 0,
+                    sources: None,
+                    selected_source: 0,
+                    source_name: None,
+                    manual: Some(ManualProfile {
+                        allowed_ips: "0.0.0.0/0".into(),
+                        ..Default::default()
+                    }),
+                    forwarding_enabled: false,
+                    forward_ip: String::new(),
+                    forward_port: String::new(),
+                    forward_password: Default::default(),
+                });
+                app.screen = Screen::VpnImport;
             }
             VpnFocus::Import => open_vpn_import(app, client).await,
             VpnFocus::Delete => vpn_delete_selected(app),
@@ -664,12 +865,22 @@ async fn open_vpn_import(app: &mut TuiApp, client: &ApiClient) {
         _ => None,
     };
     app.vpn_import = Some(VpnImportEditor {
-        field: VpnImportField::Name,
+        field: if sources.is_some() {
+            VpnImportField::Sources
+        } else {
+            VpnImportField::Name
+        },
         name: String::new(),
         path: String::new(),
         cursor: 0,
         sources,
         selected_source: 0,
+        source_name: None,
+        manual: None,
+        forwarding_enabled: false,
+        forward_ip: String::new(),
+        forward_port: String::new(),
+        forward_password: zeroize::Zeroizing::new(String::new()),
     });
     app.screen = Screen::VpnImport;
 }
@@ -680,48 +891,79 @@ pub(crate) async fn handle_vpn_import_key(app: &mut TuiApp, key: KeyCode, client
         return;
     };
 
-    if let Some((_, names)) = &editor.sources {
+    use VpnImportField::*;
+    if key == KeyCode::Esc
+        || (editor.field == Cancel && matches!(key, KeyCode::Enter | KeyCode::Char(' ')))
+    {
+        app.vpn_import = None;
+        enter_list(app);
+        return;
+    }
+    if editor.sources.is_some() {
+        if !editor.fields().contains(&editor.field) {
+            editor.field = Sources;
+        }
+        // Shortcuts activate the same focusable actions as Enter/Space.
+        let key = match key {
+            KeyCode::Char('p') => {
+                editor.field = LocalFile;
+                KeyCode::Enter
+            }
+            KeyCode::Char('r') => {
+                editor.field = Refresh;
+                KeyCode::Enter
+            }
+            other => other,
+        };
         match key {
-            KeyCode::Up => editor.selected_source = editor.selected_source.saturating_sub(1),
-            KeyCode::Down => {
-                editor.selected_source =
-                    (editor.selected_source + 1).min(names.len().saturating_sub(1))
+            KeyCode::Up if editor.field == Sources => {
+                editor.selected_source = editor.selected_source.saturating_sub(1)
             }
-            KeyCode::Char('p') => editor.sources = None,
-            KeyCode::Char('r') => open_vpn_import(app, client).await,
-            KeyCode::Enter => vpn_import_submit(app, client).await,
-            KeyCode::Esc => {
-                app.vpn_import = None;
-                enter_list(app);
+            KeyCode::Down
+                if editor.field == Sources
+                    && editor.selected_source + 1 < editor.sources.as_ref().unwrap().1.len() =>
+            {
+                editor.selected_source += 1
             }
+            KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Tab
+            | KeyCode::BackTab => editor.move_field(key),
+            KeyCode::Char('o') => editor.open_source(true),
+            KeyCode::Enter | KeyCode::Char(' ') => match editor.field {
+                Sources => editor.open_source(false),
+                LocalFile => {
+                    editor.sources = None;
+                    editor.field = Name;
+                    editor.reset_cursor();
+                }
+                Refresh => open_vpn_import(app, client).await,
+                _ => {}
+            },
             _ => {}
         }
         return;
     }
     match key {
-        KeyCode::Esc => {
-            app.vpn_import = None;
-            enter_list(app);
+        KeyCode::F(2) => editor.toggle_forwarding(),
+        KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab => editor.move_field(key),
+        KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right
+            if editor.field == Forwarding =>
+        {
+            editor.toggle_forwarding()
         }
-        KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab => {
-            editor.field = toggle_vpn_import_field(editor.field);
-            editor.reset_cursor();
+        KeyCode::Enter | KeyCode::Char(' ') if editor.field == Import => {
+            vpn_import_submit(app, client).await
         }
-        KeyCode::Enter if editor.field == VpnImportField::Name => {
-            editor.field = VpnImportField::Path;
-            editor.reset_cursor();
-        }
-        KeyCode::Enter => vpn_import_submit(app, client).await,
+        KeyCode::Enter => editor.move_field(KeyCode::Down),
+        KeyCode::Left | KeyCode::Right if editor.active_value().is_none() => editor.move_field(key),
         other => {
-            editor.active_editor().handle_key(other);
+            if let Some(mut input) = editor.active_editor() {
+                input.handle_key(other);
+            }
         }
-    }
-}
-
-fn toggle_vpn_import_field(field: VpnImportField) -> VpnImportField {
-    match field {
-        VpnImportField::Name => VpnImportField::Path,
-        VpnImportField::Path => VpnImportField::Name,
     }
 }
 
@@ -979,11 +1221,55 @@ pub(crate) async fn vpn_import_submit(app: &mut TuiApp, client: &ApiClient) {
         enter_list(app);
         return;
     };
-    if let Some((_, names)) = &editor.sources {
-        let Some(name) = names.get(editor.selected_source).cloned() else {
+    if editor
+        .sources
+        .as_ref()
+        .is_some_and(|(_, names)| names.is_empty())
+    {
+        return;
+    }
+    let forwarding = if !editor.forwarding_enabled {
+        None
+    } else {
+        let (Ok(ip), Ok(port)) = (
+            editor.forward_ip.trim().parse::<std::net::IpAddr>(),
+            editor.forward_port.trim().parse::<u16>(),
+        ) else {
+            app.push_message(
+                LogLevel::Warn,
+                "Enter a valid forwarding IP, port and password",
+            );
             return;
         };
-        match client.request(&Request::VpnImportFromSource { name }).await {
+        if port == 0
+            || ip.is_unspecified()
+            || ip.is_multicast()
+            || editor.forward_password.is_empty()
+            || editor.forward_password.contains('\0')
+        {
+            app.push_message(
+                LogLevel::Warn,
+                "Enter a valid forwarding IP, nonzero port and password",
+            );
+            return;
+        }
+        Some(traffic_masq_protocol::WgObfsForwarding {
+            ip,
+            port,
+            password: editor.forward_password.clone(),
+        })
+    };
+    let source = editor.source_name.clone().or_else(|| {
+        editor
+            .sources
+            .as_ref()
+            .and_then(|(_, names)| names.get(editor.selected_source).cloned())
+    });
+    if let Some(name) = source {
+        match client
+            .request(&Request::VpnImportFromSource { name, forwarding })
+            .await
+        {
             Ok(Response::VpnProfileImported { name }) => {
                 app.push_message(LogLevel::Info, format!("Imported profile {name}"));
                 app.vpn_import = None;
@@ -1004,7 +1290,7 @@ pub(crate) async fn vpn_import_submit(app: &mut TuiApp, client: &ApiClient) {
     }
     let name = editor.name.trim().to_string();
     let path = editor.path.trim().to_string();
-    if name.is_empty() || path.is_empty() {
+    if name.is_empty() || (editor.manual.is_none() && path.is_empty()) {
         app.push_message(
             LogLevel::Warn,
             "Both profile name and file path are required",
@@ -1012,17 +1298,28 @@ pub(crate) async fn vpn_import_submit(app: &mut TuiApp, client: &ApiClient) {
         return;
     }
 
-    let mut contents = match std::fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(error) => {
-            app.push_message(LogLevel::Error, format!("Failed to read {path}: {error}"));
-            return;
+    let mut contents = if let Some(manual) = &editor.manual {
+        match manual.contents() {
+            Ok(contents) => contents,
+            Err(message) => {
+                app.push_message(LogLevel::Warn, message);
+                return;
+            }
+        }
+    } else {
+        match std::fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) => {
+                app.push_message(LogLevel::Error, format!("Failed to read {path}: {error}"));
+                return;
+            }
         }
     };
     let result = client
         .request(&Request::VpnImportProfile {
             name,
             contents: contents.clone(),
+            forwarding,
         })
         .await;
     contents.zeroize();

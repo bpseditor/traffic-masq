@@ -114,3 +114,14 @@ existing persistence, compensation and ownership-recovery mechanisms remain in
 place. A failed rollback or ambiguous persistence outcome is not reported as
 successful recovery. These UI changes do not provide an atomic transaction spanning
 profile import, standalone activation, policy changes and router changes.
+
+## Manual profile creation
+
+The VPN library's Create action opens a local editor for a complete WireGuard
+profile: name, private key, interface address, peer public key, endpoint and
+allowed IPs. The type selector chooses WireGuard or WireGuard + wgobfs; the latter
+requires forwarding IP, port and password. Save uses the existing
+`VpnImportProfile` request and daemon validation/reference protection. It does not
+enable VPN or activate a tunnel. Incomplete forms remain local until saved;
+cancelling discards them. Private keys and forwarding passwords are masked and
+held in zeroizing editor storage. Import from files remains available separately.

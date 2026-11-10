@@ -399,3 +399,7 @@ draft and confirmation flow. See the [architecture contract](../../../../docs/vp
 On Dashboard, press **p** to view daemon pending transactions, including changes started in another window. Select a row and press **Enter** to open its confirmation/rollback screen; **Roll back now** is selected initially. The list refreshes automatically. Interface and Router/VPN deadlines come from the daemon and are not renewed by opening another client.
 
 If a pending-state read fails, the list keeps the last observed rows and shows an unavailable-state warning. Cached empty results do not prove that no transactions are pending; the warning clears after a successful refresh.
+
+Dashboard inventory is the configuration source for its returned revision. Per-interface configuration reads are used only for legacy interface-only responses; do not re-fetch configuration after inventory, as this mixes snapshots and adds one request per interface.
+
+CLI password prompts use `Zeroizing<String>` so early I/O errors and cancelled futures also clear collected secrets on drop. Keep this guard when adding authentication prompts.

@@ -18,7 +18,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::Style;
 use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::tui::api::client::ApiClient;
 use crate::tui::api::model::{DhcpClientStatusView, Request, Response};
@@ -376,15 +376,15 @@ pub async fn change_device_password_with_client(client: ApiClient) -> Result<()>
         );
     }
 
-    let mut current = rpassword::prompt_password("Current device password: ")?;
+    let mut current = Zeroizing::new(rpassword::prompt_password("Current device password: ")?);
     let login_result = client.login(&current).await;
     if let Err(error) = login_result {
         current.zeroize();
         return Err(error);
     }
 
-    let mut new_password = rpassword::prompt_password("New device password: ")?;
-    let mut repeated = rpassword::prompt_password("Repeat device password: ")?;
+    let mut new_password = Zeroizing::new(rpassword::prompt_password("New device password: ")?);
+    let mut repeated = Zeroizing::new(rpassword::prompt_password("Repeat device password: ")?);
     if new_password != repeated {
         let _ = client.logout().await;
         current.zeroize();
@@ -459,8 +459,9 @@ pub async fn run_tui_with_client(client: ApiClient, direct: bool) -> Result<()> 
             println!(
                 "First-time setup: run this TUI as root to initialize the shared device password."
             );
-            let mut password = rpassword::prompt_password("New device password: ")?;
-            let mut repeated = rpassword::prompt_password("Repeat device password: ")?;
+            let mut password = Zeroizing::new(rpassword::prompt_password("New device password: ")?);
+            let mut repeated =
+                Zeroizing::new(rpassword::prompt_password("Repeat device password: ")?);
             if password != repeated {
                 password.zeroize();
                 repeated.zeroize();
@@ -1649,7 +1650,7 @@ fn focus_action_slot(app: &mut TuiApp, slot: usize) {
         Screen::RouteEditor => router::focus_route_editor_action(app, slot),
         Screen::Vpn | Screen::VpnProfile | Screen::VpnSettings => vpn::focus_action(app, slot),
         Screen::VpnPolicy => vpn_policy::focus_action(app, slot),
-        Screen::VpnImport => vpn::focus_import_submit(app),
+        Screen::VpnImport => vpn::focus_import_action(app, slot),
         Screen::SettingsPassword => settings::focus_password_submit(app),
         Screen::WifiEditor => wifi::focus_editor_action(app, slot),
         Screen::WifiApProfiles => {
@@ -1766,6 +1767,7 @@ async fn handle_key(app: &mut TuiApp, key: KeyCode, client: &ApiClient, direct: 
             | Screen::Vpn
             | Screen::VpnProfile
             | Screen::VpnSettings
+            | Screen::VpnImport
             | Screen::Log
             | Screen::Router
             | Screen::Forwarding
@@ -2031,32 +2033,36 @@ async fn load_daemon_dashboard(client: &ApiClient) -> DashboardData {
         Ok(Response::VpnConfig { enabled }) => data.vpn_enabled = Some(enabled),
         other => errors.push(format!("VPN configuration unavailable: {other:?}")),
     }
-    use futures_util::StreamExt;
-    let configs = futures_util::stream::iter(data.interfaces.iter().map(|status| async move {
-        let name = status.interface.name.clone();
-        let result = client
-            .request(&Request::GetInterfaceConfig {
-                interface: name.clone(),
-            })
-            .await;
-        (name, result)
-    }))
-    .buffer_unordered(4)
-    .collect::<Vec<_>>()
-    .await;
-    for (name, result) in configs {
-        match result {
-            Ok(Response::InterfaceConfig { config, .. }) => {
-                data.managed
-                    .insert(name.clone(), config.as_ref().is_some_and(|c| c.managed));
-                data.roles.insert(
-                    name,
-                    config.map_or(traffic_masq_protocol::InterfaceRole::None, |c| c.role),
-                );
+    // Inventory already includes configuration at one revision. Only legacy
+    // interface-only responses need separate configuration reads.
+    if data.inventory.is_none() {
+        use futures_util::StreamExt;
+        let configs = futures_util::stream::iter(data.interfaces.iter().map(|status| async move {
+            let name = status.interface.name.clone();
+            let result = client
+                .request(&Request::GetInterfaceConfig {
+                    interface: name.clone(),
+                })
+                .await;
+            (name, result)
+        }))
+        .buffer_unordered(4)
+        .collect::<Vec<_>>()
+        .await;
+        for (name, result) in configs {
+            match result {
+                Ok(Response::InterfaceConfig { config, .. }) => {
+                    data.managed
+                        .insert(name.clone(), config.as_ref().is_some_and(|c| c.managed));
+                    data.roles.insert(
+                        name,
+                        config.map_or(traffic_masq_protocol::InterfaceRole::None, |c| c.role),
+                    );
+                }
+                other => errors.push(format!(
+                    "Interface configuration unavailable ({name}): {other:?}"
+                )),
             }
-            other => errors.push(format!(
-                "Interface configuration unavailable ({name}): {other:?}"
-            )),
         }
     }
     if data.vpn_enabled == Some(true) {
