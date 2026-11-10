@@ -1,6 +1,7 @@
 //! WireGuard profile parsing and Linux netlink operations.
 
 mod provider;
+pub mod wgobfs;
 mod wireguard;
 
 pub use provider::{LazyNetlinkVpnProvider, NetlinkVpnProvider, ProviderError, VpnProvider};

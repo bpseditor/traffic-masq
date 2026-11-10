@@ -3033,6 +3033,7 @@ dependencies = [
  "ipnet",
  "serde",
  "serde_json",
+ "zeroize",
 ]
 
 [[package]]

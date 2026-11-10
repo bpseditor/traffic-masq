@@ -913,6 +913,21 @@ async fn build_chain_subsystems(
     vpn_provider: Arc<FakeChainVpnProvider>,
     net_provider: Arc<FakeChainNetworkProvider>,
 ) -> ProductionRouterSubsystems<FakeDataplaneProvider> {
+    build_chain_subsystems_with_nft(
+        dir,
+        vpn_provider,
+        net_provider,
+        Arc::new(FakeNftExecutor::default()),
+    )
+    .await
+}
+
+async fn build_chain_subsystems_with_nft(
+    dir: &Path,
+    vpn_provider: Arc<FakeChainVpnProvider>,
+    net_provider: Arc<FakeChainNetworkProvider>,
+    nft_executor: Arc<dyn crate::firewall::NftExecutor>,
+) -> ProductionRouterSubsystems<FakeDataplaneProvider> {
     let interfaces = InterfaceManager::new(
         Arc::new(FakeNetworkProvider::permissive_addresses()),
         AddressOwnershipJournal::in_memory(),
@@ -938,7 +953,7 @@ async fn build_chain_subsystems(
             wireguard_store,
             state_dir: dir.to_path_buf(),
             network: net_provider,
-            nft_executor: Arc::new(FakeNftExecutor::default()),
+            nft_executor,
         },
     )
 }
@@ -1312,6 +1327,239 @@ async fn host_policy_uses_live_kernel_endpoints_instead_of_resolving_profiles_ag
             .host_endpoints,
         vec!["198.51.100.27".parse::<Ipv4Addr>().unwrap()]
     );
+}
+
+#[tokio::test]
+async fn native_wgobfs_replaces_endpoint_restores_after_restart_and_routes_outer_server() {
+    let (subsystems, provider, net, dir) = chain_subsystems().await;
+    let forwarding = traffic_masq_wireguard::wgobfs::WgObfsConfig::new(
+        "203.0.113.45:443".parse().unwrap(),
+        "native-test",
+    )
+    .unwrap();
+    let profile = crate::vpn::WireGuardDriver
+        .with_wgobfs("chain.conf", valid_wg_config().as_bytes(), &forwarding)
+        .unwrap();
+    WireGuardProfileStore::new(dir.path().join("wireguard"))
+        .import(
+            &crate::vpn::WireGuardDriver,
+            "chain.conf",
+            profile.as_bytes(),
+        )
+        .unwrap();
+    let plan = VpnChainPlan {
+        standalone: None,
+        hops: vec![relay_hop(0, "tm-wg-0", "wan0")],
+    };
+    subsystems.apply_vpn_chain(&plan).await.unwrap();
+    let first = provider.endpoints.lock().unwrap()["tm-wg-0"][0];
+    assert!(first.ip().is_loopback());
+    assert_ne!(first.port(), 0);
+    assert_ne!(first.port(), 3000);
+    let policy = crate::core::vpn_policy_manager::VpnPolicyDesired {
+        masquerade_forwarded: true,
+        route_host_traffic: true,
+        chain_profiles: vec!["chain.conf".into()],
+        protected_subnets: vec!["192.0.2.0/24".parse().unwrap()],
+        vpn_interface: "tm-wg-0".into(),
+        physical_uplink: "wan0".into(),
+        host_endpoints: Vec::new(),
+    };
+    assert_eq!(
+        subsystems
+            .vpn_chain
+            .with_host_endpoints(&policy)
+            .await
+            .unwrap()
+            .host_endpoints,
+        vec!["203.0.113.45".parse::<Ipv4Addr>().unwrap()]
+    );
+    drop(subsystems);
+    let restarted = build_chain_subsystems(dir.path(), provider.clone(), net).await;
+    restarted.apply_vpn_chain(&plan).await.unwrap();
+    let restored = provider.endpoints.lock().unwrap()["tm-wg-0"][0];
+    assert!(restored.ip().is_loopback());
+    assert_eq!(
+        restarted
+            .vpn_chain
+            .with_host_endpoints(&policy)
+            .await
+            .unwrap()
+            .host_endpoints,
+        vec!["203.0.113.45".parse::<Ipv4Addr>().unwrap()]
+    );
+    // Repeated reconciliation retains the live proxy and its endpoint.
+    restarted.apply_vpn_chain(&plan).await.unwrap();
+    assert_eq!(provider.endpoints.lock().unwrap()["tm-wg-0"][0], restored);
+    restarted
+        .apply_vpn_chain(&VpnChainPlan {
+            standalone: None,
+            hops: vec![],
+        })
+        .await
+        .unwrap();
+    assert!(!provider.link_exists("tm-wg-0").await.unwrap());
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if tokio::net::UdpSocket::bind(restored).await.is_ok() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn native_wgobfs_cleanup_survives_missing_profile_or_failed_transport_restore() {
+    for missing_profile in [true, false] {
+        let (subsystems, provider, net, dir) = chain_subsystems().await;
+        let forwarding = traffic_masq_wireguard::wgobfs::WgObfsConfig::new(
+            "127.0.0.1:443".parse().unwrap(),
+            "recovery-test",
+        )
+        .unwrap();
+        let profile = crate::vpn::WireGuardDriver
+            .with_wgobfs("chain.conf", valid_wg_config().as_bytes(), &forwarding)
+            .unwrap();
+        WireGuardProfileStore::new(dir.path().join("wireguard"))
+            .import(
+                &crate::vpn::WireGuardDriver,
+                "chain.conf",
+                profile.as_bytes(),
+            )
+            .unwrap();
+        let plan = VpnChainPlan {
+            standalone: None,
+            hops: vec![relay_hop(0, "tm-wg-0", "wan0")],
+        };
+        subsystems.apply_vpn_chain(&plan).await.unwrap();
+        drop(subsystems);
+        if missing_profile {
+            std::fs::remove_file(dir.path().join("wireguard/chain.conf")).unwrap();
+        } else {
+            provider.fail_set_peers_for("tm-wg-0");
+        }
+        let restarted = build_chain_subsystems(dir.path(), provider.clone(), net).await;
+        assert!(restarted.apply_vpn_chain(&plan).await.is_err());
+        assert!(provider.link_exists("tm-wg-0").await.unwrap());
+        restarted
+            .apply_vpn_chain(&VpnChainPlan {
+                standalone: None,
+                hops: vec![],
+            })
+            .await
+            .expect("proven ownership must permit cleanup even when runtime restore fails");
+        assert!(!provider.link_exists("tm-wg-0").await.unwrap());
+        assert!(ActiveProfileStore::for_hop(dir.path(), 0)
+            .load()
+            .await
+            .unwrap()
+            .is_none());
+    }
+}
+
+#[tokio::test]
+async fn standalone_native_wgobfs_can_disconnect_switch_or_roll_back_without_old_profile() {
+    struct EmptyPolicyFirewall;
+    impl crate::firewall::NftExecutor for EmptyPolicyFirewall {
+        fn execute(&self, arguments: &[&str], input: &[u8]) -> Result<Vec<u8>> {
+            assert_eq!(arguments, ["--json", "list", "ruleset"]);
+            assert!(
+                input.is_empty(),
+                "these operations must preserve the absent policy"
+            );
+            Ok(crate::firewall::vpn::test_support::nft_ruleset(None))
+        }
+    }
+    for action in ["disconnect", "switch", "rollback"] {
+        let (initial, provider, net, dir) = chain_subsystems().await;
+        drop(initial);
+        let nft: Arc<dyn crate::firewall::NftExecutor> = Arc::new(EmptyPolicyFirewall);
+        let subsystems =
+            build_chain_subsystems_with_nft(dir.path(), provider.clone(), net.clone(), nft.clone())
+                .await;
+        net.add_interface("tm-wg0", 2).await;
+        let forwarding = traffic_masq_wireguard::wgobfs::WgObfsConfig::new(
+            "127.0.0.1:443".parse().unwrap(),
+            "standalone-recovery-test",
+        )
+        .unwrap();
+        let profile = crate::vpn::WireGuardDriver
+            .with_wgobfs("chain.conf", valid_wg_config().as_bytes(), &forwarding)
+            .unwrap();
+        let store = WireGuardProfileStore::new(dir.path().join("wireguard"));
+        store
+            .import(
+                &crate::vpn::WireGuardDriver,
+                "chain.conf",
+                profile.as_bytes(),
+            )
+            .unwrap();
+        store
+            .import(
+                &crate::vpn::WireGuardDriver,
+                "replacement.conf",
+                valid_wg_config().as_bytes(),
+            )
+            .unwrap();
+        let before = subsystems.vpn_chain.snapshot(true).await.unwrap();
+        subsystems
+            .apply_vpn_chain(&VpnChainPlan {
+                standalone: Some(crate::core::router::StandaloneVpnDesired {
+                    profile: Some("chain.conf".into()),
+                    policy: None,
+                }),
+                hops: vec![],
+            })
+            .await
+            .unwrap();
+        drop(subsystems);
+        std::fs::remove_file(dir.path().join("wireguard/chain.conf")).unwrap();
+        let restarted =
+            build_chain_subsystems_with_nft(dir.path(), provider.clone(), net, nft).await;
+        if action == "rollback" {
+            restarted.rollback_vpn_chain(&before).await.unwrap();
+        } else {
+            restarted
+                .apply_vpn_chain(&VpnChainPlan {
+                    standalone: Some(crate::core::router::StandaloneVpnDesired {
+                        profile: (action == "switch").then(|| "replacement.conf".into()),
+                        policy: None,
+                    }),
+                    hops: vec![],
+                })
+                .await
+                .unwrap();
+        }
+        if action == "switch" {
+            let active = ActiveProfileStore::new(dir.path().join("vpn-active-profile.json"))
+                .load()
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(active.profile_name, "replacement.conf");
+            restarted
+                .apply_vpn_chain(&VpnChainPlan {
+                    standalone: Some(crate::core::router::StandaloneVpnDesired {
+                        profile: None,
+                        policy: None,
+                    }),
+                    hops: vec![],
+                })
+                .await
+                .unwrap();
+        }
+        assert!(!provider.link_exists("tm-wg0").await.unwrap());
+        assert!(
+            ActiveProfileStore::new(dir.path().join("vpn-active-profile.json"))
+                .load()
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
 }
 
 #[tokio::test]

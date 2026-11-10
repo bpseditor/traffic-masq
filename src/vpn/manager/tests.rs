@@ -83,6 +83,39 @@ async fn activate_deactivate_round_trip_succeeds() {
 }
 
 #[tokio::test]
+async fn cleanup_reconciliation_does_not_require_a_profile_or_weaken_ownership_proof() {
+    for foreign in [false, true] {
+        let (manager, fake, dir) = manager_with_store();
+        manager
+            .import_profile("home.conf", valid_config(VALID_PRIVATE_KEY).as_bytes())
+            .unwrap();
+        manager.activate("home.conf").await.unwrap();
+        drop(manager);
+        std::fs::remove_file(dir.path().join("wireguard/home.conf")).unwrap();
+        if foreign {
+            fake.seed_foreign_link(OWNED_INTERFACE_NAME, OTHER_PRIVATE_KEY);
+        }
+        let restarted = VpnManager::new(
+            WireGuardVpnDriver::new(
+                fake.clone(),
+                WireGuardProfileStore::new(dir.path().join("wireguard")),
+            ),
+            ActiveProfileStore::new(dir.path().join("active-profile.json")),
+        );
+        let result = restarted.reconcile_for_cleanup().await.unwrap();
+        if foreign {
+            assert_eq!(result, ReconcileOutcome::ForeignInterfacePresent);
+            assert!(restarted.active().is_none());
+            assert!(fake.link_exists(OWNED_INTERFACE_NAME).await.unwrap());
+        } else {
+            assert!(matches!(result, ReconcileOutcome::Adopted(_)));
+            restarted.deactivate().await.unwrap();
+            assert!(!fake.link_exists(OWNED_INTERFACE_NAME).await.unwrap());
+        }
+    }
+}
+
+#[tokio::test]
 async fn delete_refuses_profile_used_by_an_active_owned_interface() {
     let (manager, _fake, _dir) = manager_with_store();
     manager

@@ -56,6 +56,24 @@ use std::net::Ipv4Addr;
 use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 
+/// Optional native rs-wgobfs transport for an imported WireGuard profile.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WgObfsForwarding {
+    pub ip: std::net::IpAddr,
+    pub port: u16,
+    pub password: zeroize::Zeroizing<String>,
+}
+
+impl fmt::Debug for WgObfsForwarding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WgObfsForwarding")
+            .field("ip", &self.ip)
+            .field("port", &self.port)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonLogSnapshot {
     pub lines: Vec<String>,
@@ -1385,11 +1403,15 @@ pub enum Request<Interface, Proposal> {
     VpnListSources,
     VpnImportFromSource {
         name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forwarding: Option<WgObfsForwarding>,
     },
     VpnListProfiles,
     VpnImportProfile {
         name: String,
         contents: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        forwarding: Option<WgObfsForwarding>,
     },
     VpnDeleteProfile {
         name: String,

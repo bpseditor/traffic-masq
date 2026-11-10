@@ -117,13 +117,13 @@ impl VpnChainRuntime {
         if !policy.route_host_traffic {
             return Ok(observed);
         }
-        let deps = self.require_vpn_chain_deps()?;
         let mut endpoints: Vec<Ipv4Addr> = Vec::new();
         for (index, profile) in policy.chain_profiles.iter().enumerate() {
             let interface = crate::vpn::manager::hop_interface_name(index as u32);
-            let addresses = deps
-                .vpn_provider
-                .peer_endpoints(&interface)
+            let addresses = self
+                .vpn_manager_for_hop(index as u32)
+                .await?
+                .transport_endpoints(&interface)
                 .await
                 .with_context(|| {
                     format!("failed to observe endpoints of VPN profile '{profile}' on {interface}")
@@ -586,7 +586,7 @@ impl VpnChainRuntime {
         }
 
         if let Some(tunnel) = tunnel {
-            match tunnel.reconcile_on(&hop.interface).await {
+            match tunnel.reconcile_for_cleanup_on(&hop.interface).await {
                 Ok(ReconcileOutcome::Absent) => {}
                 Ok(ReconcileOutcome::Adopted(_)) => {
                     if let Err(error) = tunnel.deactivate_on(&hop.interface).await {
@@ -714,7 +714,7 @@ impl VpnChainRuntime {
         desired: &crate::core::router::StandaloneVpnDesired,
     ) -> Result<()> {
         let (tunnel, policy) = self.standalone_runtime()?;
-        tunnel.reconcile().await?;
+        tunnel.reconcile_for_cleanup().await?;
         let current = tunnel.status().await?.map(|status| status.profile_name);
         if desired.policy.is_none() {
             policy
@@ -728,6 +728,8 @@ impl VpnChainRuntime {
             if let Some(profile) = &desired.profile {
                 tunnel.activate(profile).await?;
             }
+        } else if desired.profile.is_some() {
+            tunnel.reconcile().await?;
         }
         if let Some(desired) = &desired.policy {
             policy.activate(desired).await?;
@@ -747,7 +749,7 @@ impl VpnChainRuntime {
             errors.push(error);
         }
         let restoration = async {
-            tunnel.reconcile().await?;
+            tunnel.reconcile_for_cleanup().await?;
             let current = tunnel.status().await?.map(|status| status.profile_name);
             if current != snapshot.profile {
                 if current.is_some() {
@@ -756,6 +758,8 @@ impl VpnChainRuntime {
                 if let Some(profile) = &snapshot.profile {
                     tunnel.activate(profile).await?;
                 }
+            } else if snapshot.profile.is_some() {
+                tunnel.reconcile().await?;
             }
             let mut restored_policy = snapshot.policy.clone();
             if let Some(previous) = snapshot.interface_index {

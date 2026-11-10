@@ -124,7 +124,11 @@ impl ControlService {
         }
     }
 
-    pub(super) async fn vpn_import_from_source(&self, name: String) -> Response {
+    pub(super) async fn vpn_import_from_source(
+        &self,
+        name: String,
+        forwarding: Option<traffic_masq_protocol::WgObfsForwarding>,
+    ) -> Response {
         let Some(vpn) = &self.vpn else {
             return vpn_disabled();
         };
@@ -139,7 +143,10 @@ impl ControlService {
         };
         match crate::vpn::store::read_source_profile(&config.vpn.wireguard_import_dir, &name) {
             Ok(contents) => match std::str::from_utf8(&contents) {
-                Ok(contents) => self.vpn_import_profile(name, contents.to_owned()).await,
+                Ok(contents) => {
+                    self.vpn_import_profile(name, contents.to_owned(), forwarding)
+                        .await
+                }
                 Err(error) => Response::Error {
                     message: error.to_string(),
                 },
@@ -162,8 +169,38 @@ impl ControlService {
         }
     }
 
-    pub(super) async fn vpn_import_profile(&self, name: String, contents: String) -> Response {
-        let contents = zeroize::Zeroizing::new(contents);
+    pub(super) async fn vpn_import_profile(
+        &self,
+        name: String,
+        contents: String,
+        forwarding: Option<traffic_masq_protocol::WgObfsForwarding>,
+    ) -> Response {
+        let mut contents = zeroize::Zeroizing::new(contents);
+        if let Some(forwarding) = forwarding {
+            let config = match traffic_masq_wireguard::wgobfs::WgObfsConfig::new(
+                std::net::SocketAddr::new(forwarding.ip, forwarding.port),
+                &forwarding.password,
+            ) {
+                Ok(config) => config,
+                Err(error) => {
+                    return vpn_error(VpnErrorDetail::InvalidProfile {
+                        message: error.to_string(),
+                    })
+                }
+            };
+            contents = match crate::vpn::WireGuardDriver.with_wgobfs(
+                &name,
+                contents.as_bytes(),
+                &config,
+            ) {
+                Ok(contents) => contents,
+                Err(error) => {
+                    return vpn_error(VpnErrorDetail::InvalidProfile {
+                        message: error.to_string(),
+                    })
+                }
+            };
+        }
         let Some(vpn) = &self.vpn else {
             return vpn_disabled();
         };

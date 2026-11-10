@@ -1460,6 +1460,7 @@ async fn vpn_profile_list_import_activate_status_deactivate_over_http() -> Resul
 
     match admin
         .request(&Request::VpnImportProfile {
+            forwarding: None,
             name: "home.conf".to_string(),
             contents: vpn_test_profile_contents(),
         })

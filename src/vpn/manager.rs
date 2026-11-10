@@ -421,6 +421,7 @@ impl<D: VpnDriver> VpnManager<D> {
         intent: &PersistedActivationIntent,
     ) -> Result<(), ManagerError> {
         if !self.driver.link_exists(&intent.interface).await? {
+            self.driver.stop_runtime(&intent.interface).await?;
             self.clear_activation_intent_for(&intent.interface).await?;
             self.owned
                 .lock()
@@ -438,6 +439,7 @@ impl<D: VpnDriver> VpnManager<D> {
             // and the marker-verified delete. That is safe: there is no
             // runtime state left to own, so only the stale intent remains.
             if !self.driver.link_exists(&intent.interface).await? {
+                self.driver.stop_runtime(&intent.interface).await?;
                 self.clear_activation_intent_for(&intent.interface).await?;
                 self.owned
                     .lock()
@@ -475,6 +477,7 @@ impl<D: VpnDriver> VpnManager<D> {
 
         let Some(record) = record else {
             if !self.driver.link_exists(interface).await? {
+                self.driver.stop_runtime(interface).await?;
                 let persisted_matches = self
                     .active_profile_store
                     .load()
@@ -504,6 +507,8 @@ impl<D: VpnDriver> VpnManager<D> {
         if self.driver.link_exists(interface).await? {
             self.assert_still_owned(&record).await?;
             self.driver.deactivate(&record.interface).await?;
+        } else {
+            self.driver.stop_runtime(interface).await?;
         }
 
         // Keep the in-memory ownership proof until the durable marker is gone.
@@ -530,6 +535,7 @@ impl<D: VpnDriver> VpnManager<D> {
 
         let currently_exists = self.driver.link_exists(&snapshot.interface).await?;
         if !currently_exists {
+            self.driver.stop_runtime(&snapshot.interface).await?;
             self.active_profile_store.clear().await?;
             self.clear_activation_intent_for(&snapshot.interface)
                 .await?;
@@ -579,6 +585,30 @@ impl<D: VpnDriver> VpnManager<D> {
         &self,
         interface: &str,
     ) -> Result<ReconcileOutcome<D::OwnershipProof>, ManagerError> {
+        self.reconcile_inner(interface, true).await
+    }
+
+    /// Prove ownership for teardown without starting or reconfiguring transports.
+    /// Cleanup must remain possible when a profile is missing or transport
+    /// reconstruction fails. The same durable proof and launch journal apply.
+    pub async fn reconcile_for_cleanup(
+        &self,
+    ) -> Result<ReconcileOutcome<D::OwnershipProof>, ManagerError> {
+        self.reconcile_for_cleanup_on(OWNED_INTERFACE_NAME).await
+    }
+
+    pub async fn reconcile_for_cleanup_on(
+        &self,
+        interface: &str,
+    ) -> Result<ReconcileOutcome<D::OwnershipProof>, ManagerError> {
+        self.reconcile_inner(interface, false).await
+    }
+
+    async fn reconcile_inner(
+        &self,
+        interface: &str,
+        restore_runtime: bool,
+    ) -> Result<ReconcileOutcome<D::OwnershipProof>, ManagerError> {
         // Reconciliation mutates the same runtime/ownership state as activation
         // and deactivation. In particular, a persisted activation intent is a
         // rollback journal only after an in-flight activation has stopped. If
@@ -592,6 +622,7 @@ impl<D: VpnDriver> VpnManager<D> {
         let intent = self.activation_intent_store.load().await?;
 
         if !self.driver.link_exists(interface).await? {
+            self.driver.stop_runtime(interface).await?;
             if persisted
                 .as_ref()
                 .is_some_and(|persisted| persisted.interface == interface)
@@ -624,6 +655,11 @@ impl<D: VpnDriver> VpnManager<D> {
                 if let Some(persisted_proof) = decoded {
                     let observed_proof = self.driver.read_ownership_proof(interface).await?;
                     if observed_proof.as_ref() == Some(&persisted_proof) {
+                        if restore_runtime {
+                            self.driver
+                                .restore_runtime(interface, &persisted.profile_name)
+                                .await?;
+                        }
                         let record = OwnedInterfaceRecord {
                             interface: interface.to_string(),
                             ownership_proof: persisted_proof,
@@ -712,6 +748,15 @@ impl<D: VpnDriver> VpnManager<D> {
             return Err(ManagerError::OwnershipProofFailed(record.interface.clone()));
         }
         Ok(())
+    }
+}
+
+impl VpnManager<crate::vpn::wireguard::WireGuardVpnDriver> {
+    pub async fn transport_endpoints(
+        &self,
+        interface: &str,
+    ) -> Result<Vec<std::net::SocketAddr>, ManagerError> {
+        Ok(self.driver.transport_endpoints(interface).await?)
     }
 }
 

@@ -220,6 +220,26 @@ managed Input with the DHCP client enabled. Import WireGuard profiles in VPN,
 then add, reorder or remove hops. The order is physical uplink → first hop →
 last hop → LAN.
 
+For **WireGuard + rs-wgobfs**, import the WireGuard `.conf` and enter the
+forwarding server's **IP**, **port** and **password**. In the daemon's source
+file list select a profile and press **Enter**, or choose **Local file**.
+Use **arrows/Tab** to focus **rs-wgobfs** and **Enter/Space** to enable it. All three fields are required when
+rs-wgobfs is enabled; leave it disabled for ordinary WireGuard.
+The client runs inside `traffic-masqd`: it allocates a loopback UDP port and
+substitutes that endpoint when configuring WireGuard. The source file and its
+`PreUp`/`PostUp` hooks are never modified or executed. No `rs-wgobfs` executable
+is needed. The stored profile includes a private `[WgObfs]` section with the
+forwarding address and the derived 32-byte key; it is protected like the
+WireGuard private key. Forwarding currently requires a single-peer profile.
+After a daemon restart, ownership verification precedes restarting the client
+and updating the local endpoint. A preserved kernel interface cannot carry
+obfuscated traffic while the daemon itself is stopped.
+
+The API's `vpn_import_profile` and `vpn_import_from_source` requests accept an
+optional `forwarding` object: `{"ip":"203.0.113.10","port":443,"password":"…"}`.
+The external forwarding address is used for the router's VPN endpoint bypass,
+so routing host traffic through VPN does not route the obfuscator into itself.
+
 Uplink and VPN chain edits preserve explicit Internet sharing rules. Configure
 those rules in **Route → Internet sharing**, including the VPN egress; an uplink
 or chain alone grants no forwarding or NAT permissions.

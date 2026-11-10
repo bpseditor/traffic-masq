@@ -45,6 +45,42 @@ fn valid_profile_parses_through_driver() {
 }
 
 #[test]
+fn forwarding_settings_roundtrip_without_rewriting_the_input_endpoint() {
+    let raw = valid_config();
+    let forwarding =
+        crate::wgobfs::WgObfsConfig::new("203.0.113.9:443".parse().unwrap(), "p#a=ss word")
+            .unwrap();
+    let attached = WireGuardDriver
+        .with_wgobfs("home.conf", raw.as_bytes(), &forwarding)
+        .unwrap();
+    let profile = WireGuardDriver
+        .parse_named_profile("home.conf", attached.as_bytes())
+        .unwrap();
+    assert_eq!(
+        profile.peers[0].endpoint,
+        Some("203.0.113.1:51820".parse().unwrap())
+    );
+    let saved = profile.wgobfs.as_ref().unwrap();
+    assert_eq!(saved.forward, forwarding.forward);
+    assert_eq!(saved.key, forwarding.key);
+    assert!(!attached.contains("p#a=ss word"));
+    assert!(!format!("{profile:?}").contains(&BASE64.encode(forwarding.key.0)));
+    assert!(WireGuardDriver
+        .with_wgobfs("home.conf", attached.as_bytes(), &forwarding)
+        .is_err());
+    assert!(WireGuardDriver
+        .parse_named_profile(
+            "home.conf",
+            format!("{raw}\n[WgObfs]\nForward = 203.0.113.9:443\n").as_bytes()
+        )
+        .is_err());
+    let multiple = format!("{raw}\n[Peer]\nPublicKey = {VALID_PUBLIC_KEY}\n");
+    assert!(WireGuardDriver
+        .with_wgobfs("home.conf", multiple.as_bytes(), &forwarding)
+        .is_err());
+}
+
+#[test]
 fn rejects_bad_base64_private_key() {
     let bad = valid_config().replace(VALID_PRIVATE_KEY, "not-valid-base64!!");
     let err = WireGuardDriver

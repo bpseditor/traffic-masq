@@ -866,6 +866,7 @@ async fn set_vpn_policy_mode(client: &ApiClient, mode: VpnPolicyMode) -> Result<
 async fn import_and_activate_tunnel(client: &ApiClient, name: &str, contents: &str) -> Result<()> {
     match client
         .request(&Request::VpnImportProfile {
+            forwarding: None,
             name: name.to_string(),
             contents: contents.to_string(),
         })

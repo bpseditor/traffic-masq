@@ -44,6 +44,8 @@ impl fmt::Display for VpnKind {
 
 #[derive(Debug, thiserror::Error)]
 pub enum VpnDriverError {
+    #[error("VPN transport failed: {0}")]
+    Transport(String),
     #[error("profile parsing/validation failed: {0}")]
     Profile(#[from] ProfileError),
 
@@ -108,6 +110,19 @@ pub trait VpnDriver: Send + Sync {
     ) -> Result<Self::OwnershipProof, VpnDriverError>;
 
     async fn deactivate(&self, interface: &str) -> Result<(), VpnDriverError>;
+
+    /// Restore in-process transports only after the manager proves link ownership.
+    async fn restore_runtime(
+        &self,
+        _interface: &str,
+        _profile_name: &str,
+    ) -> Result<(), VpnDriverError> {
+        Ok(())
+    }
+
+    async fn stop_runtime(&self, _interface: &str) -> Result<(), VpnDriverError> {
+        Ok(())
+    }
 
     fn encode_ownership_proof(&self, proof: &Self::OwnershipProof) -> Vec<u8>;
 

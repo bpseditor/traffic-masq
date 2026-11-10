@@ -10,8 +10,23 @@ pub(super) async fn vpn_import_from_source(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
     AxumPath(name): AxumPath<String>,
+    request: Option<Json<VpnSourceForwardingRequest>>,
 ) -> Result<Json<Response>, ApiError> {
-    dispatch_control(&state, &principal, Request::VpnImportFromSource { name }).await
+    dispatch_control(
+        &state,
+        &principal,
+        Request::VpnImportFromSource {
+            name,
+            forwarding: request.and_then(|Json(request)| request.forwarding),
+        },
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+pub(super) struct VpnSourceForwardingRequest {
+    #[serde(default)]
+    forwarding: Option<traffic_masq_protocol::WgObfsForwarding>,
 }
 
 pub(super) async fn vpn_list_profiles(
@@ -25,6 +40,8 @@ pub(super) async fn vpn_list_profiles(
 pub(super) struct VpnImportProfileRequest {
     name: String,
     contents: String,
+    #[serde(default)]
+    forwarding: Option<traffic_masq_protocol::WgObfsForwarding>,
 }
 
 pub(super) async fn vpn_import_profile(
@@ -38,6 +55,7 @@ pub(super) async fn vpn_import_profile(
         Request::VpnImportProfile {
             name: request.name,
             contents: request.contents,
+            forwarding: request.forwarding,
         },
     )
     .await

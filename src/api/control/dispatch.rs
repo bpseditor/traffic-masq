@@ -412,11 +412,15 @@ impl ControlService {
             Request::RouterProvisioningStatus => self.router_provisioning_status().await,
             Request::RouterProvisioningRepair => self.router_provisioning_repair().await,
             Request::VpnListSources => self.vpn_list_sources().await,
-            Request::VpnImportFromSource { name } => self.vpn_import_from_source(name).await,
-            Request::VpnListProfiles => self.vpn_list_profiles().await,
-            Request::VpnImportProfile { name, contents } => {
-                self.vpn_import_profile(name, contents).await
+            Request::VpnImportFromSource { name, forwarding } => {
+                self.vpn_import_from_source(name, forwarding).await
             }
+            Request::VpnListProfiles => self.vpn_list_profiles().await,
+            Request::VpnImportProfile {
+                name,
+                contents,
+                forwarding,
+            } => self.vpn_import_profile(name, contents, forwarding).await,
             Request::VpnDeleteProfile { name } => self.vpn_delete_profile(name).await,
             Request::GetVpnConfig => self.vpn_config().await,
             Request::SetVpnEnabled { enabled } => self.set_vpn_enabled(enabled).await,

@@ -356,18 +356,70 @@ async fn daemon_establishes_real_wireguard_handshake_and_tunnels_traffic() -> Re
     let _test_guard = NAMESPACE_TEST_LOCK.lock().await;
 
     let mut fixture = VpnNamespaceFixture::new().await?;
-    if let Err(error) = run_happy_path(&mut fixture).await {
+    if let Err(error) = run_happy_path(&mut fixture, false).await {
         fixture.dump_state_on_failure("happy path");
         return Err(error);
     }
     Ok(())
 }
 
-async fn run_happy_path(fixture: &mut VpnNamespaceFixture) -> Result<()> {
+#[tokio::test]
+#[ignore = "requires root, iproute2, wireguard-tools and RS_WGOBFS_BINARY; creates real WireGuard links and tests the native client against rs-wgobfs"]
+async fn daemon_establishes_wireguard_over_native_wgobfs() -> Result<()> {
+    let _test_guard = NAMESPACE_TEST_LOCK.lock().await;
+    let mut fixture = VpnNamespaceFixture::new().await?;
+    if let Err(error) = run_happy_path(&mut fixture, true).await {
+        fixture.dump_state_on_failure("native rs-wgobfs");
+        return Err(error);
+    }
+    Ok(())
+}
+
+struct ReferenceProxy(std::process::Child);
+impl Drop for ReferenceProxy {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+async fn run_happy_path(fixture: &mut VpnNamespaceFixture, obfuscated: bool) -> Result<()> {
     let host_private_key = wg_genkey()?;
     let host_public_key = wg_pubkey(&host_private_key)?;
 
     let peer_public_key = fixture.setup_peer_wireguard_interface(&host_public_key)?;
+
+    let mut reference_proxy = None;
+    let forwarding = if obfuscated {
+        let reservation = std::net::UdpSocket::bind("127.0.0.1:0")?;
+        let address = reservation.local_addr()?;
+        drop(reservation);
+        let binary = std::env::var("RS_WGOBFS_BINARY")
+            .context("set RS_WGOBFS_BINARY to the reference rs-wgobfs executable")?;
+        reference_proxy = Some(ReferenceProxy(
+            Command::new(binary)
+                .args([
+                    "-l",
+                    &address.to_string(),
+                    "-f",
+                    &format!("{PEER_UNDERLAY_ADDR}:{PEER_LISTEN_PORT}"),
+                    "-k",
+                    "namespace-test-password",
+                    "-m",
+                    "unobfs",
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?,
+        ));
+        Some(traffic_masq_protocol::WgObfsForwarding {
+            ip: address.ip(),
+            port: address.port(),
+            password: zeroize::Zeroizing::new("namespace-test-password".into()),
+        })
+    } else {
+        None
+    };
 
     timeout(WAIT_TIMEOUT, fixture.start_daemon())
         .await
@@ -401,6 +453,7 @@ async fn run_happy_path(fixture: &mut VpnNamespaceFixture) -> Result<()> {
     }
     let import_response = client
         .request(&Request::VpnImportFromSource {
+            forwarding,
             name: "peer.conf".to_string(),
         })
         .await
@@ -477,6 +530,25 @@ async fn run_happy_path(fixture: &mut VpnNamespaceFixture) -> Result<()> {
     {
         Response::RouterCommitted { .. } => {}
         other => bail!("unexpected VPN activation commit response: {other:?}"),
+    }
+
+    if obfuscated {
+        // Rebuild the in-process client from the private stored settings and
+        // replace its old loopback endpoint when the daemon starts again.
+        fixture.stop_daemon_gracefully().await?;
+        fixture.start_daemon().await?;
+        timeout(WAIT_TIMEOUT, wait_for_handshake()).await??;
+        let ping = Command::new("ping")
+            .args(["-I", "tm-wg0", "-c", "3", "-W", "3", PEER_TUNNEL_ADDR])
+            .status()?;
+        anyhow::ensure!(
+            ping.success(),
+            "tunnel did not recover after daemon restart"
+        );
+        anyhow::ensure!(
+            reference_proxy.as_mut().unwrap().0.try_wait()?.is_none(),
+            "reference rs-wgobfs exited"
+        );
     }
 
     let deactivate_response = client

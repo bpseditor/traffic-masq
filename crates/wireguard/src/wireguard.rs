@@ -183,6 +183,7 @@ pub struct WireGuardProfile {
     pub name: String,
     pub interface: WireGuardInterfaceConfig,
     pub peers: Vec<WireGuardPeerConfig>,
+    pub wgobfs: Option<crate::wgobfs::WgObfsConfig>,
 }
 
 impl fmt::Debug for WireGuardProfile {
@@ -191,6 +192,7 @@ impl fmt::Debug for WireGuardProfile {
             .field("name", &self.name)
             .field("interface", &self.interface)
             .field("peers", &self.peers)
+            .field("wgobfs", &self.wgobfs)
             .finish()
     }
 }
@@ -203,6 +205,8 @@ impl fmt::Display for WireGuardProfile {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ProfileError {
+    #[error("invalid rs-wgobfs configuration: {0}")]
+    InvalidWgObfs(&'static str),
     #[error("profile name must not be empty")]
     EmptyName,
 
@@ -311,11 +315,15 @@ fn parse_config(name: &str, raw: &[u8]) -> Result<WireGuardProfile, ProfileError
         None,
         Interface,
         Peer,
+        WgObfs,
     }
 
     let mut interface_raw: Option<RawInterface> = None;
     let mut peers_raw: Vec<RawPeer> = Vec::new();
     let mut section = Section::None;
+    let mut obfs_seen = false;
+    let mut obfs_forward = None;
+    let mut obfs_key = None;
 
     for raw_line in text.lines() {
         let line = strip_comment(raw_line).trim();
@@ -326,6 +334,13 @@ fn parse_config(name: &str, raw: &[u8]) -> Result<WireGuardProfile, ProfileError
         if line.starts_with('[') {
             let header = line.trim_start_matches('[').trim_end_matches(']').trim();
             match header.to_ascii_lowercase().as_str() {
+                "wgobfs" => {
+                    if obfs_seen {
+                        return Err(ProfileError::InvalidWgObfs("duplicate section"));
+                    }
+                    obfs_seen = true;
+                    section = Section::WgObfs;
+                }
                 "interface" => {
                     if interface_raw.is_some() {
                         return Err(ProfileError::MalformedLine(line.to_string()));
@@ -349,6 +364,11 @@ fn parse_config(name: &str, raw: &[u8]) -> Result<WireGuardProfile, ProfileError
         let value = value.trim().to_string();
 
         match section {
+            Section::WgObfs => match key.as_str() {
+                "forward" if obfs_forward.is_none() => obfs_forward = Some(value),
+                "key" if obfs_key.is_none() => obfs_key = Some(Zeroizing::new(value)),
+                _ => return Err(ProfileError::InvalidWgObfs("unknown or duplicate field")),
+            },
             Section::None => return Err(ProfileError::MalformedLine(line.to_string())),
             Section::Interface => {
                 let iface = interface_raw
@@ -483,6 +503,34 @@ fn parse_config(name: &str, raw: &[u8]) -> Result<WireGuardProfile, ProfileError
         });
     }
 
+    let wgobfs = if obfs_seen {
+        if peers.len() != 1 {
+            return Err(ProfileError::InvalidWgObfs(
+                "forwarding requires exactly one WireGuard peer",
+            ));
+        }
+        let forward = obfs_forward
+            .as_deref()
+            .ok_or(ProfileError::InvalidWgObfs("missing Forward"))?
+            .parse::<SocketAddr>()
+            .map_err(|_| {
+                ProfileError::InvalidWgObfs("Forward must be an IP address and nonzero port")
+            })?;
+        if forward.port() == 0 || forward.ip().is_unspecified() || forward.ip().is_multicast() {
+            return Err(ProfileError::InvalidWgObfs("invalid forwarding address"));
+        }
+        let key = WireGuardKey::parse(
+            obfs_key
+                .as_deref()
+                .map(|s| s.as_str())
+                .ok_or(ProfileError::InvalidWgObfs("missing Key"))?,
+            "WgObfs.Key",
+        )?;
+        Some(crate::wgobfs::WgObfsConfig { forward, key })
+    } else {
+        None
+    };
+
     Ok(WireGuardProfile {
         name: name.to_string(),
         interface: WireGuardInterfaceConfig {
@@ -493,6 +541,7 @@ fn parse_config(name: &str, raw: &[u8]) -> Result<WireGuardProfile, ProfileError
             mtu,
         },
         peers,
+        wgobfs,
     })
 }
 
@@ -515,6 +564,36 @@ fn split_csv(value: &str) -> Vec<String> {
 pub struct WireGuardDriver;
 
 impl WireGuardDriver {
+    /// Attach validated forwarding settings without rewriting the input's WG endpoint.
+    /// Activation substitutes the native client's dynamically allocated endpoint.
+    pub fn with_wgobfs(
+        &self,
+        name: &str,
+        raw: &[u8],
+        config: &crate::wgobfs::WgObfsConfig,
+    ) -> Result<Zeroizing<String>, ProfileError> {
+        let profile = self.parse_named_profile(name, raw)?;
+        if profile.wgobfs.is_some() {
+            return Err(ProfileError::InvalidWgObfs(
+                "forwarding is already configured",
+            ));
+        }
+        if profile.peers.len() != 1 {
+            return Err(ProfileError::InvalidWgObfs(
+                "forwarding requires exactly one WireGuard peer",
+            ));
+        }
+        let encoded = Zeroizing::new(BASE64.encode(config.key.0));
+        let output = Zeroizing::new(format!(
+            "{}\n[WgObfs]\nForward = {}\nKey = {}\n",
+            std::str::from_utf8(raw).map_err(|_| ProfileError::InvalidEncoding)?,
+            config.forward,
+            encoded.as_str()
+        ));
+        self.parse_named_profile(name, output.as_bytes())?;
+        Ok(output)
+    }
+
     /// Validate the profile name and parse its configuration without applying kernel changes.
     pub fn parse_named_profile(
         &self,

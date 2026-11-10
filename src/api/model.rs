@@ -11,8 +11,8 @@ pub use traffic_masq_protocol::{
     RouterProvisioningApplyRequest, RouterProvisioningPreviewRequest,
     RouterProvisioningPreviewView, RouterProvisioningRequest, RouterProvisioningStatusView,
     RouterRecoveryNotice, SecuritySettings, VpnActiveStatus, VpnPolicyStatusView,
-    VpnProfileSummary, WifiApProfileSummary, WifiApProfileWriteRequest, WifiApSpecView,
-    WifiClientEditRequest, WifiClientProfileSummary, WifiClientProfileWriteRequest,
+    VpnProfileSummary, WgObfsForwarding, WifiApProfileSummary, WifiApProfileWriteRequest,
+    WifiApSpecView, WifiClientEditRequest, WifiClientProfileSummary, WifiClientProfileWriteRequest,
     WifiEditRequest,
 };
 

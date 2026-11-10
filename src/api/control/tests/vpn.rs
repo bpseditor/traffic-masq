@@ -1,6 +1,60 @@
 use super::*;
 
 #[tokio::test]
+async fn vpn_import_accepts_config_and_native_forwarding_settings() {
+    use std::os::unix::fs::PermissionsExt;
+    let (service, directory) = vpn_enabled_service().await;
+    let response = service
+        .dispatch(Request::VpnImportProfile {
+            name: "obfs.conf".into(),
+            contents: valid_vpn_profile_contents(),
+            forwarding: Some(traffic_masq_protocol::WgObfsForwarding {
+                ip: "203.0.113.45".parse().unwrap(),
+                port: 443,
+                password: zeroize::Zeroizing::new("api-test-password".into()),
+            }),
+        })
+        .await;
+    assert!(matches!(response, Response::VpnProfileImported { .. }));
+    let path = directory.path().join("wireguard/obfs.conf");
+    let contents = std::fs::read(&path).unwrap();
+    let profile = crate::vpn::WireGuardDriver
+        .parse_named_profile("obfs.conf", &contents)
+        .unwrap();
+    assert_eq!(
+        profile.wgobfs.unwrap().forward,
+        "203.0.113.45:443".parse().unwrap()
+    );
+    assert_eq!(
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(
+        !format!("{:?}", service.dispatch(Request::VpnListProfiles).await)
+            .contains("api-test-password")
+    );
+    let invalid = service
+        .dispatch(Request::VpnImportProfile {
+            name: "bad-obfs.conf".into(),
+            contents: valid_vpn_profile_contents(),
+            forwarding: Some(traffic_masq_protocol::WgObfsForwarding {
+                ip: "203.0.113.45".parse().unwrap(),
+                port: 0,
+                password: zeroize::Zeroizing::new("invalid-secret".into()),
+            }),
+        })
+        .await;
+    assert!(matches!(
+        invalid,
+        Response::VpnError {
+            detail: VpnErrorDetail::InvalidProfile { .. }
+        }
+    ));
+    assert!(!format!("{invalid:?}").contains("invalid-secret"));
+    assert!(!directory.path().join("wireguard/bad-obfs.conf").exists());
+}
+
+#[tokio::test]
 async fn vpn_requests_are_rejected_when_vpn_is_disabled() {
     let directory = tempdir().expect("tempdir");
     let config = router_base_config();
@@ -18,6 +72,7 @@ async fn vpn_requests_are_rejected_when_vpn_is_disabled() {
     for request in [
         Request::VpnListProfiles,
         Request::VpnImportProfile {
+            forwarding: None,
             name: "home.conf".to_string(),
             contents: valid_vpn_profile_contents(),
         },
@@ -46,6 +101,7 @@ async fn vpn_import_list_delete_profile_round_trip_never_leaks_the_private_key()
 
     match service
         .dispatch(Request::VpnImportProfile {
+            forwarding: None,
             name: "home.conf".to_string(),
             contents: valid_vpn_profile_contents(),
         })
@@ -106,6 +162,7 @@ async fn vpn_activate_status_deactivate_workflow_dispatches_through_control_serv
     let (service, _directory) = vpn_enabled_service().await;
     service
         .dispatch(Request::VpnImportProfile {
+            forwarding: None,
             name: "home.conf".to_string(),
             contents: valid_vpn_profile_contents(),
         })
@@ -152,6 +209,7 @@ async fn vpn_activate_conflict_with_foreign_interface_returns_typed_error() {
     let (service, _directory) = vpn_enabled_service_with_provider(provider).await;
     service
         .dispatch(Request::VpnImportProfile {
+            forwarding: None,
             name: "home.conf".to_string(),
             contents: valid_vpn_profile_contents(),
         })
@@ -175,6 +233,7 @@ async fn vpn_activate_when_already_active_returns_typed_error() {
     let (service, _directory) = vpn_enabled_service().await;
     service
         .dispatch(Request::VpnImportProfile {
+            forwarding: None,
             name: "home.conf".to_string(),
             contents: valid_vpn_profile_contents(),
         })
@@ -207,6 +266,7 @@ async fn unused_vpn_profile_storage_remains_available_with_execution_disabled() 
     assert!(matches!(
         service
             .dispatch(Request::VpnImportProfile {
+                forwarding: None,
                 name: "offline.conf".into(),
                 contents: valid_vpn_profile_contents()
             })
@@ -252,6 +312,7 @@ async fn vpn_source_import_copies_profile_without_exposing_keys_or_changing_sour
     assert!(matches!(
         service
             .dispatch(Request::VpnImportFromSource {
+                forwarding: None,
                 name: "wg0.conf".into()
             })
             .await,
@@ -268,6 +329,7 @@ async fn vpn_source_import_copies_profile_without_exposing_keys_or_changing_sour
     assert!(matches!(
         service
             .dispatch(Request::VpnImportFromSource {
+                forwarding: None,
                 name: "../wg0.conf".into()
             })
             .await,
@@ -280,6 +342,7 @@ async fn standalone_vpn_is_tentative_rollback_then_commit_survives_reload() {
     let (service, directory) = vpn_enabled_service().await;
     service
         .dispatch(Request::VpnImportProfile {
+            forwarding: None,
             name: "home.conf".into(),
             contents: valid_vpn_profile_contents(),
         })
@@ -347,6 +410,7 @@ async fn standalone_vpn_rollback_rebinds_owned_routes_after_tunnel_recreation() 
     fixture
         .service
         .dispatch(Request::VpnImportProfile {
+            forwarding: None,
             name: "other.conf".into(),
             contents: valid_vpn_profile_contents(),
         })
