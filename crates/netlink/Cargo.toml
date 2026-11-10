@@ -12,7 +12,7 @@ async-trait = "0.1"
 futures-util = "0.3"
 ipnet = { version = "2", features = ["serde"] }
 netlink-packet-core = "0.9"
-netlink-packet-route = "0.33"
+netlink-packet-route = "0.34"
 netlink-sys = "0.9"
 rtnetlink = "0.23"
 serde = { version = "1", features = ["derive"] }
