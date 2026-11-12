@@ -15,7 +15,7 @@ doc = false
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
-crossterm = "0.28"
+crossterm = "0.29"
 futures-util = "0.3"
 ipnet = { version = "2", features = ["serde"] }
 nix = { version = "0.29", features = ["fs", "user"] }

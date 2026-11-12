@@ -2029,7 +2029,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3043,7 +3043,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "crossterm 0.28.1",
+ "crossterm 0.29.0",
  "futures-util",
  "http-body-util",
  "hyper",
