@@ -714,21 +714,19 @@ async fn run_loop(
                         Event::Key(key) if key.kind == event::KeyEventKind::Press => {
                             handle_key_event(&mut app, key, client, direct).await;
                         }
-                        Event::Paste(text) => {
+                        Event::Paste(text)
                             if app.screen == Screen::VpnImport
                                 && app.ui.input_enabled
                                 && !app.help_open
-                                && !app.message_open
-                            {
-                                if let Some(editor) = app.vpn_import.as_mut() {
-                                    let multiline = editor.field == vpn::VpnImportField::Config;
-                                    if let Some(mut input) = editor.active_editor() {
-                                        for c in
-                                            text.replace("\r\n", "\n").replace('\r', "\n").chars()
-                                        {
-                                            if !c.is_control() || (multiline && c == '\n') {
-                                                input.insert(c);
-                                            }
+                                && !app.message_open =>
+                        {
+                            if let Some(editor) = app.vpn_import.as_mut() {
+                                let multiline = editor.field == vpn::VpnImportField::Config;
+                                if let Some(mut input) = editor.active_editor() {
+                                    for c in text.replace("\r\n", "\n").replace('\r', "\n").chars()
+                                    {
+                                        if !c.is_control() || (multiline && c == '\n') {
+                                            input.insert(c);
                                         }
                                     }
                                 }
