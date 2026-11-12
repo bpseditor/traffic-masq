@@ -17,6 +17,8 @@ use super::{Screen, TuiApp};
 
 #[derive(Debug, Default, Clone)]
 pub(crate) struct VpnData {
+    pub(crate) transport_paths: Vec<String>,
+    pub(crate) autoconnect: Option<traffic_masq_protocol::VpnAutoconnectSettings>,
     pub(crate) profiles: Vec<VpnProfileSummary>,
     pub(crate) active: Option<VpnActiveStatus>,
     pub(crate) selected_profile: usize,
@@ -36,18 +38,32 @@ pub(crate) enum VpnFocus {
     List,
     Connect,
     Details,
+    Edit,
     Import,
     Create,
     Settings,
     Delete,
     Route,
     ToggleEnabled,
+    Autoconnect,
+    Attempts,
+    Fallback,
 }
 
 fn actions(screen: Screen) -> &'static [VpnFocus] {
     match screen {
-        Screen::VpnProfile => &[VpnFocus::Connect, VpnFocus::Route, VpnFocus::Delete],
-        Screen::VpnSettings => &[VpnFocus::ToggleEnabled],
+        Screen::VpnProfile => &[
+            VpnFocus::Connect,
+            VpnFocus::Route,
+            VpnFocus::Edit,
+            VpnFocus::Delete,
+        ],
+        Screen::VpnSettings => &[
+            VpnFocus::ToggleEnabled,
+            VpnFocus::Autoconnect,
+            VpnFocus::Attempts,
+            VpnFocus::Fallback,
+        ],
         _ => &[
             VpnFocus::Connect,
             VpnFocus::Details,
@@ -122,6 +138,8 @@ fn connection_state(app: &TuiApp, name: &str) -> &'static str {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VpnImportField {
+    Config,
+    PasteConfig,
     Sources,
     PrivateKey,
     Address,
@@ -173,6 +191,7 @@ pub(crate) struct VpnImportEditor {
     pub(crate) field: VpnImportField,
     pub(crate) name: String,
     pub(crate) path: String,
+    pub(crate) config: Option<zeroize::Zeroizing<String>>,
     pub(crate) cursor: usize,
     pub(crate) sources: Option<(String, Vec<String>)>,
     pub(crate) selected_source: usize,
@@ -199,10 +218,15 @@ impl std::fmt::Debug for VpnImportEditor {
 impl VpnImportEditor {
     fn fields(&self) -> &[VpnImportField] {
         use VpnImportField::*;
+        if self.config.is_some() {
+            return &[Name, Config, Import, Cancel];
+        }
         if self.manual.is_some() {
             return if self.forwarding_enabled {
                 &[
                     Name,
+                    LocalFile,
+                    PasteConfig,
                     Forwarding,
                     PrivateKey,
                     Address,
@@ -217,19 +241,29 @@ impl VpnImportEditor {
                 ]
             } else {
                 &[
-                    Name, Forwarding, PrivateKey, Address, PublicKey, Endpoint, AllowedIps, Import,
+                    Name,
+                    LocalFile,
+                    PasteConfig,
+                    Forwarding,
+                    PrivateKey,
+                    Address,
+                    PublicKey,
+                    Endpoint,
+                    AllowedIps,
+                    Import,
                     Cancel,
                 ]
             };
         }
         if self.sources.is_some() {
-            return &[Sources, LocalFile, Refresh, Cancel];
+            return &[Sources, LocalFile, Refresh, Cancel, PasteConfig];
         }
         match (self.source_name.is_some(), self.forwarding_enabled) {
-            (false, false) => &[Name, Path, Forwarding, Import, Cancel],
+            (false, false) => &[Name, Path, Forwarding, Import, Cancel, PasteConfig],
             (false, true) => &[
                 Name,
                 Path,
+                PasteConfig,
                 Forwarding,
                 ForwardIp,
                 ForwardPort,
@@ -246,6 +280,33 @@ impl VpnImportEditor {
                 Import,
                 Cancel,
             ],
+        }
+    }
+
+    fn move_config_cursor(&mut self, key: KeyCode) {
+        let Some(config) = &self.config else { return };
+        let lengths: Vec<_> = config
+            .split('\n')
+            .map(super::input::grapheme_count)
+            .collect();
+        let mut start = 0;
+        for (line, length) in lengths.iter().copied().enumerate() {
+            if self.cursor <= start + length {
+                let col = self.cursor - start;
+                self.cursor = match key {
+                    KeyCode::Home => start,
+                    KeyCode::End => start + length,
+                    KeyCode::Up if line > 0 => {
+                        start - lengths[line - 1] - 1 + col.min(lengths[line - 1])
+                    }
+                    KeyCode::Down if line + 1 < lengths.len() => {
+                        start + length + 1 + col.min(lengths[line + 1])
+                    }
+                    _ => self.cursor,
+                };
+                return;
+            }
+            start += length + 1;
         }
     }
 
@@ -297,6 +358,7 @@ impl VpnImportEditor {
             VpnImportField::PublicKey => Some(&self.manual.as_ref()?.public_key),
             VpnImportField::Endpoint => Some(&self.manual.as_ref()?.endpoint),
             VpnImportField::AllowedIps => Some(&self.manual.as_ref()?.allowed_ips),
+            VpnImportField::Config => Some(self.config.as_ref()?),
             VpnImportField::Name => Some(&self.name),
             VpnImportField::Path => Some(&self.path),
             VpnImportField::ForwardIp => Some(&self.forward_ip),
@@ -320,6 +382,7 @@ impl VpnImportEditor {
             VpnImportField::PublicKey => &mut self.manual.as_mut()?.public_key,
             VpnImportField::Endpoint => &mut self.manual.as_mut()?.endpoint,
             VpnImportField::AllowedIps => &mut self.manual.as_mut()?.allowed_ips,
+            VpnImportField::Config => self.config.as_mut()?,
             VpnImportField::Name => &mut self.name,
             VpnImportField::Path => &mut self.path,
             VpnImportField::ForwardIp => &mut self.forward_ip,
@@ -390,6 +453,38 @@ pub(crate) fn render_vpn(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut T
         ));
     }
     if app.screen == Screen::VpnSettings {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            "Autoconnect (daemon startup and reconnect)",
+            Style::default().fg(theme::ACCENT),
+        ));
+        if let Some(settings) = &app.vpn.autoconnect {
+            lines.push(Line::from(format!(
+                "Profile: {}",
+                settings.profile.as_deref().unwrap_or("disabled")
+            )));
+            lines.push(Line::from(format!(
+                "Attempts: {} | After failure: {}",
+                settings.attempts,
+                if settings.fallback_direct {
+                    "disconnect and use direct uplink"
+                } else {
+                    "do nothing"
+                }
+            )));
+            lines.push(Line::from(
+                "Toggle uses the selected profile. Attempts cycles 1–20.",
+            ));
+            lines.push(Line::from(
+                "Checks handshake; enables runtime keepalive every 25s.",
+            ));
+            lines.push(Line::from(
+                "Standalone VPN only; saved chains are not changed.",
+            ));
+        } else {
+            lines.push(Line::from("Autoconnect settings unavailable; refresh."));
+        }
+        lines.push(Line::from(""));
         lines.extend([
             Line::from("Enable/disable requires confirmation; without it, changes roll back."),
             Line::from("To disable: remove the saved chain in Route, select Direct policy,"),
@@ -403,6 +498,13 @@ pub(crate) fn render_vpn(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut T
                 Style::default().fg(theme::ACCENT),
             ));
             lines.push(Line::from(profile_state(app, name)));
+            lines.push(Line::from("Transport path (kernel route lookup):"));
+            if app.vpn.transport_paths.is_empty() {
+                lines.push(Line::from("Unavailable while disconnected."));
+            }
+            for path in &app.vpn.transport_paths {
+                lines.push(Line::from(path.clone()));
+            }
             lines.push(Line::from(
                 "Traffic routing and VPN chains are configured in Route.",
             ));
@@ -508,6 +610,7 @@ pub(crate) fn render_vpn(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut T
             VpnFocus::Connect if standalone_selected(app) => "[Disconnect]",
             VpnFocus::Connect => "[Connect]",
             VpnFocus::Details => "[Open profile]",
+            VpnFocus::Edit => "[Edit config]",
             VpnFocus::Create => "[Create]",
             VpnFocus::Import => "[Import]",
             VpnFocus::Settings => "[VPN settings]",
@@ -515,6 +618,9 @@ pub(crate) fn render_vpn(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut T
             VpnFocus::Route => "[Open Route]",
             VpnFocus::ToggleEnabled if app.vpn.enabled == Some(true) => "[Disable VPN]",
             VpnFocus::ToggleEnabled => "[Enable VPN]",
+            VpnFocus::Autoconnect => "[Autoconnect on/off]",
+            VpnFocus::Attempts => "[Attempts +1]",
+            VpnFocus::Fallback => "[Failure action]",
             VpnFocus::List => continue,
         };
         let width = label.len() as u16;
@@ -600,6 +706,14 @@ pub(crate) fn render_vpn_import(frame: &mut ratatui::Frame<'_>, area: Rect, app:
         let selected = editor.field == *field;
         let row = lines.len() as u16;
         let line = match field {
+            Config => super::layout::field_row(
+                &format!(
+                    "Config: {} lines (keys hidden) — paste text; Enter: newline; Tab: save",
+                    editor.config.as_ref().map_or(0, |v| v.lines().count())
+                ),
+                false,
+                style,
+            ),
             Address | PublicKey | Endpoint | AllowedIps => {
                 let manual = editor.manual.as_ref().unwrap();
                 let (label, value) = match field {
@@ -646,6 +760,7 @@ pub(crate) fn render_vpn_import(frame: &mut ratatui::Frame<'_>, area: Rect, app:
                     Import => "Import",
                     Cancel => "Cancel",
                     LocalFile => "Local file",
+                    PasteConfig => "Paste config",
                     Refresh => "Refresh",
                     _ => unreachable!("text fields handled above"),
                 };
@@ -654,6 +769,36 @@ pub(crate) fn render_vpn_import(frame: &mut ratatui::Frame<'_>, area: Rect, app:
             }
         };
         lines.push(line);
+        if *field == Config {
+            if let Some(config) = &editor.config {
+                let mut start = 0;
+                for (number, text) in config.split('\n').enumerate() {
+                    let length = super::input::grapheme_count(text);
+                    let cursor_here =
+                        selected && editor.cursor >= start && editor.cursor <= start + length;
+                    let shown = if let Some((key, value)) = text.split_once('=') {
+                        if key.trim().to_ascii_lowercase().contains("key")
+                            || key.trim().to_ascii_lowercase().contains("password")
+                        {
+                            format!("{key}={}", "•".repeat(super::input::grapheme_count(value)))
+                        } else {
+                            text.to_owned()
+                        }
+                    } else {
+                        text.to_owned()
+                    };
+                    lines.push(super::layout::text_field_row(
+                        &(number + 1).to_string(),
+                        &shown,
+                        cursor_here,
+                        editor.cursor.saturating_sub(start),
+                        true,
+                        style,
+                    ));
+                    start += length + 1;
+                }
+            }
+        }
     }
     if editor.sources.is_none() && editor.forwarding_enabled {
         lines.push(Line::from("All forwarding fields are required."));
@@ -719,7 +864,22 @@ pub(crate) async fn handle_vpn_key(app: &mut TuiApp, key: KeyCode, client: &ApiC
         actions(app.screen).to_vec()
     };
     match key {
-        KeyCode::Char('r') => load_vpn_data(app, client).await,
+        KeyCode::Char('r') => {
+            load_vpn_data(app, client).await;
+            if app.screen == Screen::VpnSettings {
+                app.vpn.autoconnect = match client.request(&Request::GetVpnAutoconnect).await {
+                    Ok(Response::VpnAutoconnect { settings }) => Some(settings),
+                    _ => None,
+                };
+            }
+            if app.screen == Screen::VpnProfile {
+                app.vpn.transport_paths = match client.request(&Request::VpnTransportPaths).await {
+                    Ok(Response::VpnTransportPaths { paths }) => paths,
+                    Ok(Response::Error { message }) => vec![message],
+                    _ => vec!["Route observation unavailable".into()],
+                };
+            }
+        }
         KeyCode::Esc if app.screen != Screen::Vpn => {
             enter_list(app);
         }
@@ -754,6 +914,12 @@ pub(crate) async fn handle_vpn_key(app: &mut TuiApp, key: KeyCode, client: &ApiC
                         app.screen = Screen::VpnProfile;
                         app.vpn.focus = VpnFocus::Connect;
                         load_vpn_chain_usage(app, client).await;
+                        app.vpn.transport_paths =
+                            match client.request(&Request::VpnTransportPaths).await {
+                                Ok(Response::VpnTransportPaths { paths }) => paths,
+                                Ok(Response::Error { message }) => vec![message],
+                                _ => vec!["Route observation unavailable".into()],
+                            };
                     }
                 }
             }
@@ -769,6 +935,7 @@ pub(crate) async fn handle_vpn_key(app: &mut TuiApp, key: KeyCode, client: &ApiC
                     field: VpnImportField::Name,
                     name: String::new(),
                     path: String::new(),
+                    config: None,
                     cursor: 0,
                     sources: None,
                     selected_source: 0,
@@ -784,12 +951,87 @@ pub(crate) async fn handle_vpn_key(app: &mut TuiApp, key: KeyCode, client: &ApiC
                 });
                 app.screen = Screen::VpnImport;
             }
+            VpnFocus::Edit => {
+                if let Some(name) = selected_name(app).map(str::to_owned) {
+                    match client.request(&Request::VpnReadProfile { name }).await {
+                        Ok(Response::VpnProfileContents { name, contents }) => {
+                            app.vpn_import = Some(VpnImportEditor {
+                                field: VpnImportField::Config,
+                                name,
+                                path: String::new(),
+                                config: Some(contents.0),
+                                cursor: 0,
+                                sources: None,
+                                selected_source: 0,
+                                source_name: None,
+                                manual: None,
+                                forwarding_enabled: false,
+                                forward_ip: String::new(),
+                                forward_port: String::new(),
+                                forward_password: Default::default(),
+                            });
+                            app.screen = Screen::VpnImport;
+                        }
+                        Ok(Response::Error { message }) => {
+                            app.push_message(LogLevel::Error, message)
+                        }
+                        Err(error) => app.push_message(LogLevel::Error, error.to_string()),
+                        _ => app.push_message(LogLevel::Error, "Unable to read VPN configuration"),
+                    }
+                }
+            }
             VpnFocus::Import => open_vpn_import(app, client).await,
             VpnFocus::Delete => vpn_delete_selected(app),
             VpnFocus::Route => open_route(app, client).await,
             VpnFocus::Settings => {
+                app.vpn.autoconnect = match client.request(&Request::GetVpnAutoconnect).await {
+                    Ok(Response::VpnAutoconnect { settings }) => Some(settings),
+                    _ => None,
+                };
                 app.screen = Screen::VpnSettings;
                 app.vpn.focus = VpnFocus::ToggleEnabled;
+            }
+            VpnFocus::Autoconnect | VpnFocus::Attempts | VpnFocus::Fallback => {
+                if let Some(mut settings) = app.vpn.autoconnect.clone() {
+                    match app.vpn.focus {
+                        VpnFocus::Autoconnect => {
+                            settings.profile = if settings.profile.is_some() {
+                                None
+                            } else {
+                                selected_name(app).map(str::to_owned)
+                            };
+                            if settings.profile.is_none()
+                                && app
+                                    .vpn
+                                    .autoconnect
+                                    .as_ref()
+                                    .is_some_and(|s| s.profile.is_none())
+                            {
+                                app.push_message(LogLevel::Warn, "Select a saved profile first");
+                                return;
+                            }
+                        }
+                        VpnFocus::Attempts => settings.attempts = settings.attempts % 20 + 1,
+                        VpnFocus::Fallback => settings.fallback_direct = !settings.fallback_direct,
+                        _ => {}
+                    }
+                    match client
+                        .request(&Request::SetVpnAutoconnect { settings })
+                        .await
+                    {
+                        Ok(Response::VpnAutoconnect { settings }) => {
+                            app.vpn.autoconnect = Some(settings);
+                            app.push_message(LogLevel::Info, "Autoconnect settings saved");
+                        }
+                        Ok(Response::Error { message }) => {
+                            app.push_message(LogLevel::Error, message)
+                        }
+                        Err(error) => app.push_message(LogLevel::Error, error.to_string()),
+                        _ => {
+                            app.push_message(LogLevel::Error, "Unable to save autoconnect settings")
+                        }
+                    }
+                }
             }
             VpnFocus::ToggleEnabled => toggle_vpn_enabled(app, client).await,
         },
@@ -872,6 +1114,7 @@ async fn open_vpn_import(app: &mut TuiApp, client: &ApiClient) {
         },
         name: String::new(),
         path: String::new(),
+        config: None,
         cursor: 0,
         sources,
         selected_source: 0,
@@ -897,6 +1140,19 @@ pub(crate) async fn handle_vpn_import_key(app: &mut TuiApp, key: KeyCode, client
     {
         app.vpn_import = None;
         enter_list(app);
+        return;
+    }
+    if matches!(editor.field, LocalFile | PasteConfig)
+        && matches!(key, KeyCode::Enter | KeyCode::Char(' '))
+    {
+        let paste = editor.field == PasteConfig;
+        editor.sources = None;
+        editor.source_name = None;
+        editor.manual = None;
+        editor.config = paste.then(Default::default);
+        editor.forwarding_enabled = false;
+        editor.field = if paste { Config } else { Name };
+        editor.reset_cursor();
         return;
     }
     if editor.sources.is_some() {
@@ -947,7 +1203,10 @@ pub(crate) async fn handle_vpn_import_key(app: &mut TuiApp, key: KeyCode, client
         return;
     }
     match key {
-        KeyCode::F(2) => editor.toggle_forwarding(),
+        KeyCode::Up | KeyCode::Down | KeyCode::Home | KeyCode::End if editor.field == Config => {
+            editor.move_config_cursor(key)
+        }
+        KeyCode::F(2) if editor.config.is_none() => editor.toggle_forwarding(),
         KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab => editor.move_field(key),
         KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Left | KeyCode::Right
             if editor.field == Forwarding =>
@@ -956,6 +1215,9 @@ pub(crate) async fn handle_vpn_import_key(app: &mut TuiApp, key: KeyCode, client
         }
         KeyCode::Enter | KeyCode::Char(' ') if editor.field == Import => {
             vpn_import_submit(app, client).await
+        }
+        KeyCode::Enter if editor.field == Config => {
+            editor.active_editor().unwrap().insert('\n');
         }
         KeyCode::Enter => editor.move_field(KeyCode::Down),
         KeyCode::Left | KeyCode::Right if editor.active_value().is_none() => editor.move_field(key),
@@ -1290,7 +1552,7 @@ pub(crate) async fn vpn_import_submit(app: &mut TuiApp, client: &ApiClient) {
     }
     let name = editor.name.trim().to_string();
     let path = editor.path.trim().to_string();
-    if name.is_empty() || (editor.manual.is_none() && path.is_empty()) {
+    if name.is_empty() || (editor.manual.is_none() && editor.config.is_none() && path.is_empty()) {
         app.push_message(
             LogLevel::Warn,
             "Both profile name and file path are required",
@@ -1298,7 +1560,9 @@ pub(crate) async fn vpn_import_submit(app: &mut TuiApp, client: &ApiClient) {
         return;
     }
 
-    let mut contents = if let Some(manual) = &editor.manual {
+    let mut contents = if let Some(config) = &editor.config {
+        config.to_string()
+    } else if let Some(manual) = &editor.manual {
         match manual.contents() {
             Ok(contents) => contents,
             Err(message) => {

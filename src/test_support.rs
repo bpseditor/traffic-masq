@@ -549,6 +549,7 @@ struct FakeVpnLink {
 /// In-memory WireGuard provider for tests that need ownership-proof semantics.
 #[derive(Default)]
 pub(crate) struct FakeVpnProvider {
+    pub(crate) handshake: Option<u64>,
     pub(crate) mtus: StdMutex<HashMap<String, u32>>,
     links: StdMutex<HashMap<String, FakeVpnLink>>,
 }
@@ -696,6 +697,15 @@ impl VpnProvider for FakeVpnProvider {
             .unwrap()
             .get(name)
             .map(|link| fake_vpn_public_key(&link.private_key)))
+    }
+
+    async fn latest_handshake(&self, name: &str) -> Result<Option<u64>, ProviderError> {
+        self.require_link(name)?;
+        Ok(self.handshake)
+    }
+
+    async fn enable_keepalive(&self, name: &str) -> Result<(), ProviderError> {
+        self.require_link(name)
     }
 
     async fn is_up(&self, name: &str) -> Result<bool, ProviderError> {

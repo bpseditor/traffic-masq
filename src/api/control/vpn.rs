@@ -23,6 +23,87 @@ fn vpn_active_status(status: crate::vpn::VpnActiveStatus) -> VpnActiveStatus {
 }
 
 impl ControlService {
+    pub(super) async fn vpn_transport_paths(&self) -> Response {
+        let result = async {
+            let vpn = self
+                .vpn
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("VPN runtime unavailable"))?;
+            let interfaces = self.network.list_interfaces().await?;
+            let mut paths = Vec::new();
+            for active in vpn.active_interfaces() {
+                for endpoint in vpn.transport_endpoints(&active.interface).await? {
+                    let std::net::IpAddr::V4(ip) = endpoint.ip() else {
+                        paths.push(format!(
+                            "{} → {endpoint}: IPv6 path lookup unavailable",
+                            active.interface
+                        ));
+                        continue;
+                    };
+                    let route = self.network.lookup_ipv4_route(ip).await?;
+                    paths.push(match route {
+                        Some(route) => {
+                            let dev = interfaces
+                                .iter()
+                                .find(|i| Some(i.index) == route.output_interface_index)
+                                .map(|i| i.name.as_str())
+                                .unwrap_or("unknown");
+                            format!(
+                                "{} → {} via {} dev {} (table {}){}",
+                                active.interface,
+                                endpoint,
+                                route
+                                    .gateway
+                                    .map(|g| g.to_string())
+                                    .unwrap_or_else(|| "on-link".into()),
+                                dev,
+                                route.table,
+                                if dev == active.interface {
+                                    " — ERROR: endpoint routes into its own tunnel"
+                                } else {
+                                    ""
+                                }
+                            )
+                        }
+                        None => format!("{} → {endpoint}: no unicast route", active.interface),
+                    });
+                }
+            }
+            Ok::<_, anyhow::Error>(paths)
+        }
+        .await;
+        match result {
+            Ok(paths) => Response::VpnTransportPaths { paths },
+            Err(error) => Response::Error {
+                message: error.to_string(),
+            },
+        }
+    }
+
+    pub(super) async fn vpn_read_profile(&self, name: String) -> Response {
+        let config = match self.effective_config().await {
+            Ok(config) => config,
+            Err(message) => return Response::Error { message },
+        };
+        let store = crate::vpn::WireGuardProfileStore::new(config.vpn.wireguard_config_dir);
+        match store.read_contents(&name) {
+            Ok(raw) => match std::str::from_utf8(&raw) {
+                Ok(text) => Response::VpnProfileContents {
+                    name,
+                    contents: traffic_masq_protocol::VpnConfigContents(zeroize::Zeroizing::new(
+                        text.to_owned(),
+                    )),
+                },
+                Err(_) => Response::Error {
+                    message: "Invalid UTF-8 configuration".into(),
+                },
+            },
+            Err(error) => Response::Error {
+                message: error.to_string(),
+            },
+        }
+    }
+
     pub(super) async fn vpn_config(&self) -> Response {
         match self.effective_config().await {
             Ok(config) => Response::VpnConfig {
@@ -66,7 +147,7 @@ impl ControlService {
             .await
     }
 
-    async fn apply_standalone_vpn(
+    pub(super) async fn apply_standalone_vpn(
         &self,
         enabled: bool,
         profile: Option<String>,

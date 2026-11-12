@@ -3022,6 +3022,7 @@ dependencies = [
  "netlink-sys",
  "rtnetlink",
  "serde",
+ "serde_json",
  "tokio",
  "tracing",
 ]

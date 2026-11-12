@@ -420,3 +420,33 @@ fn route_dump_does_not_inherit_route_creation_filters() {
     assert_eq!(message.header.kind, RouteType::Unspec);
     assert!(message.attributes.is_empty());
 }
+
+/// Read-only kernel check; run explicitly on a host with a default IPv4 route.
+#[tokio::test]
+#[ignore = "requires a Linux host with an IPv4 route and iproute2"]
+async fn destination_lookup_matches_ip_route_get() {
+    let destination: std::net::Ipv4Addr = "198.51.100.42".parse().unwrap();
+    let network = RtnetlinkNetworkProvider::connect().unwrap();
+    let route = network
+        .lookup_ipv4_route(destination)
+        .await
+        .unwrap()
+        .unwrap();
+    let output = std::process::Command::new("ip")
+        .args(["-j", "-4", "route", "get", &destination.to_string()])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let observed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let expected = &observed[0];
+    assert_eq!(
+        route.gateway.map(|ip| ip.to_string()),
+        expected["gateway"].as_str().map(str::to_owned)
+    );
+    let interfaces = network.list_interfaces().await.unwrap();
+    let interface = interfaces
+        .iter()
+        .find(|i| Some(i.index) == route.output_interface_index)
+        .unwrap();
+    assert_eq!(Some(interface.name.as_str()), expected["dev"].as_str());
+}

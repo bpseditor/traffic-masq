@@ -158,6 +158,12 @@ impl WireGuardProfileStore {
         Ok(driver.parse_named_profile(name, &raw)?)
     }
 
+    pub fn read_contents(&self, name: &str) -> Result<zeroize::Zeroizing<Vec<u8>>, StoreError> {
+        let directory = self.ensure_directory()?;
+        let target = self.safe_target(&directory, name)?;
+        read_optional_regular(&target)?.ok_or_else(|| StoreError::NotFound(name.to_owned()))
+    }
+
     /// Return sorted metadata summaries without key material. Creates/chmods the
     /// private directory to 0700; ignores non-files, symlinks and invalid names.
     /// Does not parse profile contents; filesystem errors propagate.

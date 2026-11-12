@@ -752,6 +752,14 @@ impl<D: VpnDriver> VpnManager<D> {
 }
 
 impl VpnManager<crate::vpn::wireguard::WireGuardVpnDriver> {
+    pub async fn enable_keepalive(&self, interface: &str) -> Result<(), ManagerError> {
+        let record = self.active_on(interface).ok_or(ManagerError::NotActive)?;
+        self.assert_still_owned(&record).await?;
+        Ok(self.driver.enable_keepalive(interface).await?)
+    }
+    pub async fn latest_handshake(&self, interface: &str) -> Result<Option<u64>, ManagerError> {
+        Ok(self.driver.latest_handshake(interface).await?)
+    }
     pub async fn transport_endpoints(
         &self,
         interface: &str,

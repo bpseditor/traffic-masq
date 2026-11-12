@@ -13,7 +13,15 @@ fn vpn_catalog_actions_are_compact_and_settings_are_separate() {
         .draw(|frame| super::super::render(frame, &mut app, false))
         .unwrap();
     assert_eq!(app.ui.buttons.len(), 5);
-    assert_eq!(actions(Screen::VpnSettings), &[VpnFocus::ToggleEnabled]);
+    assert_eq!(
+        actions(Screen::VpnSettings),
+        &[
+            VpnFocus::ToggleEnabled,
+            VpnFocus::Autoconnect,
+            VpnFocus::Attempts,
+            VpnFocus::Fallback
+        ]
+    );
     assert!(!actions(Screen::Vpn).contains(&VpnFocus::Delete));
     assert!(!actions(Screen::Vpn).contains(&VpnFocus::ToggleEnabled));
     assert!(app.ui.list_area.unwrap().height >= 10);
@@ -75,6 +83,7 @@ async fn native_forwarding_import_sends_the_settings_and_masks_the_password() {
         field: VpnImportField::ForwardPassword,
         name: "obfs.conf".into(),
         path: file.path().display().to_string(),
+        config: None,
         cursor: 3,
         sources: None,
         selected_source: 0,
@@ -190,6 +199,7 @@ async fn plain_import_skips_forwarding_and_toggle_keeps_hidden_settings_out_of_r
         field: VpnImportField::Name,
         name: "plain.conf".into(),
         path: file.path().display().to_string(),
+        config: None,
         cursor: 0,
         sources: None,
         selected_source: 0,
@@ -255,6 +265,7 @@ async fn selecting_rs_wgobfs_for_a_source_requires_forwarding_settings() {
         field: VpnImportField::Name,
         name: String::new(),
         path: String::new(),
+        config: None,
         cursor: 0,
         sources: Some(("/etc/wireguard".into(), vec!["source.conf".into()])),
         selected_source: 0,
@@ -321,6 +332,7 @@ fn vpn_import_editor_active_value_targets_the_selected_field() {
         field: VpnImportField::Name,
         name: "home".to_string(),
         path: "/etc/wireguard/home.conf".to_string(),
+        config: None,
         cursor: 0,
         sources: None,
         selected_source: 0,
@@ -332,6 +344,19 @@ fn vpn_import_editor_active_value_targets_the_selected_field() {
     editor.field = VpnImportField::Path;
     editor.active_editor().unwrap().value.push('x');
     assert_eq!(editor.path, "/etc/wireguard/home.confx");
+    editor.config = Some(zeroize::Zeroizing::new(
+        "[Interface]\nPrivateKey = secret\n".into(),
+    ));
+    editor.field = VpnImportField::Config;
+    editor.reset_cursor();
+    editor.active_editor().unwrap().insert('x');
+    assert_eq!(
+        editor.active_value(),
+        Some("[Interface]\nPrivateKey = secret\nx")
+    );
+    assert!(editor.fields().contains(&VpnImportField::Config));
+    assert!(!format!("{editor:?}").contains("secret"));
+
     assert_eq!(editor.name, "home.conf");
 }
 
@@ -347,6 +372,7 @@ fn vpn_import_editor_has_no_contents_field_to_retain_a_secret() {
         field: VpnImportField::Name,
         name: "home.conf".to_string(),
         path: "/etc/wireguard/home.conf".to_string(),
+        config: None,
         cursor: 0,
         sources: None,
         selected_source: 0,
@@ -371,6 +397,7 @@ async fn vpn_import_editor_cursor_navigation_and_editing() {
         field: VpnImportField::Name,
         name: "work".to_string(),
         path: "/tmp/vpn.conf".to_string(),
+        config: None,
         cursor: 4,
         sources: None,
         selected_source: 0,
@@ -413,6 +440,7 @@ async fn vpn_source_browser_selection_is_bounded_and_local_path_remains_availabl
             field: VpnImportField::Name,
             name: String::new(),
             path: String::new(),
+            config: None,
             cursor: 0,
             sources: Some((
                 "/etc/wireguard".into(),
@@ -1067,6 +1095,7 @@ async fn clicking_import_submits_even_when_name_field_has_focus() {
         field: VpnImportField::Name,
         name: "home.conf".into(),
         path: file.path().display().to_string(),
+        config: None,
         cursor: 0,
         sources: None,
         selected_source: 0,
@@ -1107,4 +1136,36 @@ fn manual_profile_rejects_config_injection_and_missing_fields() {
     assert!(contents.contains("[Peer]\nPublicKey = public\n"));
     profile.endpoint.push_str("\nAllowedIPs = 10.0.0.0/8");
     assert!(profile.contents().is_err());
+}
+
+#[test]
+fn multiline_config_navigation_keeps_column_and_reaches_trailing_line() {
+    let mut editor = VpnImportEditor {
+        field: VpnImportField::Config,
+        name: String::new(),
+        path: String::new(),
+        config: Some(zeroize::Zeroizing::new(
+            "абв
+x
+"
+            .into(),
+        )),
+        cursor: 2,
+        sources: None,
+        selected_source: 0,
+        source_name: None,
+        manual: None,
+        forwarding_enabled: false,
+        forward_ip: String::new(),
+        forward_port: String::new(),
+        forward_password: Default::default(),
+    };
+    editor.move_config_cursor(KeyCode::Down);
+    assert_eq!(editor.cursor, 5);
+    editor.move_config_cursor(KeyCode::Down);
+    assert_eq!(editor.cursor, 6);
+    editor.move_config_cursor(KeyCode::Up);
+    assert_eq!(editor.cursor, 4);
+    editor.move_config_cursor(KeyCode::End);
+    assert_eq!(editor.cursor, 5);
 }

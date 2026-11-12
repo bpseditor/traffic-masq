@@ -438,6 +438,11 @@ pub trait NetworkProvider: Send + Sync {
         prefix_len: u8,
     ) -> Result<()>;
 
+    /// Resolve the actual unmarked IPv4 egress using the kernel policy rules.
+    async fn lookup_ipv4_route(&self, _destination: Ipv4Addr) -> Result<Option<Ipv4RouteInfo>> {
+        anyhow::bail!("IPv4 route lookup is not supported by this network provider")
+    }
+
     /// Observe IPv4 routes; unsupported/error results are not an empty inventory.
     async fn list_ipv4_routes(&self) -> Result<Vec<Ipv4RouteInfo>> {
         anyhow::bail!("IPv4 route observation is not supported by this network provider")
@@ -569,6 +574,10 @@ where
         (**self)
             .delete_ipv4_address(interface, address, prefix_len)
             .await
+    }
+
+    async fn lookup_ipv4_route(&self, destination: Ipv4Addr) -> Result<Option<Ipv4RouteInfo>> {
+        (**self).lookup_ipv4_route(destination).await
     }
 
     async fn list_ipv4_routes(&self) -> Result<Vec<Ipv4RouteInfo>> {
@@ -1183,6 +1192,24 @@ impl NetworkProvider for RtnetlinkNetworkProvider {
                 format!("RTM_DELADDR while deleting {address}/{prefix_len} from {interface}")
             })?;
         Ok(())
+    }
+
+    async fn lookup_ipv4_route(&self, destination: Ipv4Addr) -> Result<Option<Ipv4RouteInfo>> {
+        let _request = self.request_lock.lock().await;
+        let mut message = ipv4_route_dump_message();
+        message.header.destination_prefix_length = 32;
+        message
+            .attributes
+            .push(RouteAttribute::Destination(RouteAddress::Inet(destination)));
+        let mut replies = self.handle.route().get(message).execute();
+        match replies
+            .try_next()
+            .await
+            .context("RTM_GETROUTE destination lookup")?
+        {
+            Some(reply) => parse_ipv4_route(&reply),
+            None => Ok(None),
+        }
     }
 
     async fn list_ipv4_routes(&self) -> Result<Vec<Ipv4RouteInfo>> {

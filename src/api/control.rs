@@ -9,6 +9,7 @@ mod runtime;
 mod settings;
 mod sharing_diagnostics;
 mod vpn;
+mod vpn_autoconnect;
 mod wifi;
 mod wifi_ap_profiles;
 mod wifi_autoconnect;
@@ -119,6 +120,7 @@ pub struct ControlService {
     wifi_client_profiles: WifiClientProfileStore,
 
     wifi_client_mutations: Arc<Mutex<()>>,
+    vpn_autoconnect: Arc<Mutex<vpn_autoconnect::State>>,
     wifi_autoconnect: Arc<Mutex<wifi_autoconnect::AutoconnectState>>,
     /// Pending operator-requested client deactivations. Autoconnect is only
     /// suspended after the corresponding tentative network change commits;
@@ -221,6 +223,7 @@ impl ControlService {
             wifi_client: subsystems.wifi_client,
             wifi_client_profiles,
             wifi_client_mutations: Arc::new(Mutex::new(())),
+            vpn_autoconnect: Default::default(),
             wifi_autoconnect: Default::default(),
             pending_wifi_client_deactivations: Default::default(),
         }

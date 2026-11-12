@@ -105,6 +105,18 @@ pub trait VpnProvider: Send + Sync {
         )))
     }
 
+    async fn enable_keepalive(&self, name: &str) -> Result<(), ProviderError> {
+        Err(ProviderError::Netlink(format!(
+            "keepalive configuration unavailable for {name}"
+        )))
+    }
+
+    async fn latest_handshake(&self, name: &str) -> Result<Option<u64>, ProviderError> {
+        Err(ProviderError::Netlink(format!(
+            "handshake observation unavailable for {name}"
+        )))
+    }
+
     /// Observe administrative up, not peer connectivity or handshake freshness.
     async fn is_up(&self, name: &str) -> Result<bool, ProviderError>;
 }
@@ -167,6 +179,13 @@ impl VpnProvider for Arc<dyn VpnProvider> {
 
     async fn public_key(&self, name: &str) -> Result<Option<WireGuardKey>, ProviderError> {
         (**self).public_key(name).await
+    }
+
+    async fn enable_keepalive(&self, name: &str) -> Result<(), ProviderError> {
+        (**self).enable_keepalive(name).await
+    }
+    async fn latest_handshake(&self, name: &str) -> Result<Option<u64>, ProviderError> {
+        (**self).latest_handshake(name).await
     }
 
     async fn peer_endpoints(&self, name: &str) -> Result<Vec<SocketAddr>, ProviderError> {
@@ -272,6 +291,13 @@ impl VpnProvider for LazyNetlinkVpnProvider {
 
     async fn public_key(&self, name: &str) -> Result<Option<WireGuardKey>, ProviderError> {
         self.provider().await?.public_key(name).await
+    }
+
+    async fn enable_keepalive(&self, name: &str) -> Result<(), ProviderError> {
+        self.provider().await?.enable_keepalive(name).await
+    }
+    async fn latest_handshake(&self, name: &str) -> Result<Option<u64>, ProviderError> {
+        self.provider().await?.latest_handshake(name).await
     }
 
     async fn peer_endpoints(&self, name: &str) -> Result<Vec<SocketAddr>, ProviderError> {
@@ -559,6 +585,57 @@ impl VpnProvider for NetlinkVpnProvider {
             }))
     }
 
+    async fn enable_keepalive(&self, name: &str) -> Result<(), ProviderError> {
+        let attributes = self
+            .get_device(name)
+            .await
+            .ok_or_else(|| ProviderError::NotFound(name.into()))?;
+        let peers = attributes
+            .iter()
+            .filter_map(|a| match a {
+                WireguardAttribute::Peers(peers) => Some(peers),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|p| {
+                let key = p.0.iter().find_map(|a| match a {
+                    WireguardPeerAttribute::PublicKey(key) => Some(*key),
+                    _ => None,
+                })?;
+                Some(WireguardPeer(vec![
+                    WireguardPeerAttribute::PublicKey(key),
+                    WireguardPeerAttribute::Flags(
+                        netlink_packet_wireguard::WireguardPeerFlags::UpdateOnly,
+                    ),
+                    WireguardPeerAttribute::PersistentKeepalive(
+                        p.0.iter()
+                            .find_map(|a| match a {
+                                WireguardPeerAttribute::PersistentKeepalive(value)
+                                    if *value > 0 =>
+                                {
+                                    Some((*value).min(25))
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or(25),
+                    ),
+                ]))
+            })
+            .collect();
+        self.set_device(vec![
+            WireguardAttribute::IfName(name.into()),
+            WireguardAttribute::Peers(peers),
+        ])
+        .await
+    }
+
+    async fn latest_handshake(&self, name: &str) -> Result<Option<u64>, ProviderError> {
+        let attributes = self.get_device(name).await.ok_or_else(|| {
+            ProviderError::Netlink(format!("failed to observe handshakes on {name}"))
+        })?;
+        Ok(oldest_peer_handshake(&attributes))
+    }
+
     async fn peer_endpoints(&self, name: &str) -> Result<Vec<SocketAddr>, ProviderError> {
         let attributes = self.get_device(name).await.ok_or_else(|| {
             ProviderError::Netlink(format!("failed to observe WireGuard endpoints on {name}"))
@@ -572,6 +649,29 @@ impl VpnProvider for NetlinkVpnProvider {
             .await
             .is_some_and(|link| link.header.flags.contains(LinkFlags::Up)))
     }
+}
+
+fn oldest_peer_handshake(attributes: &[WireguardAttribute]) -> Option<u64> {
+    let peers: Vec<_> = attributes
+        .iter()
+        .filter_map(|a| match a {
+            WireguardAttribute::Peers(peers) => Some(peers),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let handshakes: Option<Vec<u64>> = peers
+        .iter()
+        .map(|peer| {
+            peer.0.iter().find_map(|a| match a {
+                WireguardPeerAttribute::LastHandshake(time) if time.seconds > 0 => {
+                    Some(time.seconds as u64)
+                }
+                _ => None,
+            })
+        })
+        .collect();
+    handshakes?.into_iter().min()
 }
 
 fn device_endpoints(attributes: &[WireguardAttribute]) -> Vec<SocketAddr> {
@@ -595,6 +695,27 @@ mod endpoint_tests {
     use super::*;
 
     #[test]
+    fn handshake_health_requires_every_peer() {
+        let peer = |seconds| {
+            WireguardPeer(vec![WireguardPeerAttribute::LastHandshake(
+                netlink_packet_wireguard::WireguardTimeSpec {
+                    seconds,
+                    nano_seconds: 0,
+                },
+            )])
+        };
+        assert_eq!(oldest_peer_handshake(&[]), None);
+        assert_eq!(
+            oldest_peer_handshake(&[WireguardAttribute::Peers(vec![peer(100), peer(200)])]),
+            Some(100)
+        );
+        assert_eq!(
+            oldest_peer_handshake(&[WireguardAttribute::Peers(vec![peer(100), peer(0)])]),
+            None
+        );
+    }
+
+    #[test]
     fn collects_endpoints_across_multipart_peer_attributes() {
         let first: SocketAddr = "203.0.113.8:51820".parse().unwrap();
         let second: SocketAddr = "[2001:db8::1]:51820".parse().unwrap();
@@ -604,5 +725,81 @@ mod endpoint_tests {
             WireguardAttribute::Peers(vec![peer(second)]),
         ];
         assert_eq!(device_endpoints(&attributes), vec![first, second]);
+    }
+}
+
+#[cfg(test)]
+mod live_handshake_tests {
+    use super::*;
+
+    // Invoke inside "unshare -n" with lo up; never touches the host namespace.
+    #[tokio::test]
+    #[ignore = "requires root, kernel WireGuard, and an isolated network namespace"]
+    async fn keepalive_starts_a_real_handshake() {
+        assert_eq!(std::env::var("TM_ISOLATED_VPN_TEST").as_deref(), Ok("1"));
+        let provider = NetlinkVpnProvider::connect().unwrap();
+        let key_a =
+            WireGuardKey::parse("yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=", "test").unwrap();
+        let key_b =
+            WireGuardKey::parse("SBmoW+ojuoJZeh6P/2sh8aetgAy4dTZTAO8UzHzKtGY=", "test").unwrap();
+        provider
+            .create_link("tm-test-a", &key_a, Some(51821), "isolated-test")
+            .await
+            .unwrap();
+        provider
+            .create_link("tm-test-b", &key_b, Some(51822), "isolated-test")
+            .await
+            .unwrap();
+        let public_a = provider.public_key("tm-test-a").await.unwrap().unwrap();
+        let public_b = provider.public_key("tm-test-b").await.unwrap().unwrap();
+        for (name, key, port, allowed) in [
+            ("tm-test-a", public_b, 51822, "10.88.0.2/32"),
+            ("tm-test-b", public_a, 51821, "10.88.0.1/32"),
+        ] {
+            provider
+                .set_peers(
+                    name,
+                    &[WireGuardPeerConfig {
+                        public_key: key,
+                        allowed_ips: vec![allowed.parse().unwrap()],
+                        endpoint: Some(WireGuardEndpoint::Address(
+                            format!("127.0.0.1:{port}").parse().unwrap(),
+                        )),
+                        persistent_keepalive: None,
+                        preshared_key: None,
+                    }],
+                )
+                .await
+                .unwrap();
+            provider.set_link_up(name).await.unwrap();
+            assert_eq!(provider.latest_handshake(name).await.unwrap(), None);
+        }
+        provider.enable_keepalive("tm-test-a").await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                if provider
+                    .latest_handshake("tm-test-a")
+                    .await
+                    .unwrap()
+                    .is_some()
+                    && provider
+                        .latest_handshake("tm-test-b")
+                        .await
+                        .unwrap()
+                        .is_some()
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("keepalive should initiate a handshake without application traffic");
+        // This namespace contains only links created by this test. Its teardown
+        // also removes them if the test panics. Some kernels ignore IFLA_IFALIAS
+        // on RTM_NEWLINK for WireGuard, so marker recovery is a separate concern.
+        for name in ["tm-test-a", "tm-test-b"] {
+            provider.delete_link(name).await.unwrap();
+        }
     }
 }

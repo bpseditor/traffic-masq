@@ -57,6 +57,32 @@ use ipnet::Ipv4Net;
 use serde::{Deserialize, Serialize};
 
 /// Optional native rs-wgobfs transport for an imported WireGuard profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct VpnAutoconnectSettings {
+    pub profile: Option<String>,
+    pub attempts: u8,
+    pub fallback_direct: bool,
+}
+impl Default for VpnAutoconnectSettings {
+    fn default() -> Self {
+        Self {
+            profile: None,
+            attempts: 5,
+            fallback_direct: false,
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct VpnConfigContents(pub zeroize::Zeroizing<String>);
+impl fmt::Debug for VpnConfigContents {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct WgObfsForwarding {
     pub ip: std::net::IpAddr,
@@ -1406,6 +1432,20 @@ pub enum Request<Interface, Proposal> {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         forwarding: Option<WgObfsForwarding>,
     },
+    VpnReadProfile {
+        name: String,
+    },
+    VpnTransportPaths,
+    VpnAutoconnectAttempt {
+        profile: String,
+    },
+    VpnAutoconnectFallback {
+        profile: String,
+    },
+    GetVpnAutoconnect,
+    SetVpnAutoconnect {
+        settings: VpnAutoconnectSettings,
+    },
     VpnListProfiles,
     VpnImportProfile {
         name: String,
@@ -1729,6 +1769,16 @@ pub enum Response {
     },
     VpnProfiles {
         profiles: Vec<VpnProfileSummary>,
+    },
+    VpnProfileContents {
+        name: String,
+        contents: VpnConfigContents,
+    },
+    VpnAutoconnect {
+        settings: VpnAutoconnectSettings,
+    },
+    VpnTransportPaths {
+        paths: Vec<String>,
     },
     VpnProfileImported {
         name: String,

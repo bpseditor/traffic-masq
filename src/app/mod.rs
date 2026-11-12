@@ -145,6 +145,28 @@ fn spawn_wifi_autoconnect(
     })
 }
 
+fn spawn_vpn_autoconnect(
+    control: ControlService,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(15));
+        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => break,
+                _ = interval.tick() => {
+                    if *shutdown.borrow() { break; }
+                    if let Err(error) = control.autoconnect_vpn_once().await {
+                        tracing::warn!(%error, "VPN autoconnect pass failed");
+                    }
+                }
+            }
+        }
+    })
+}
+
 /// Open the configured authentication store and reset the device administrator password.
 pub async fn reset_device_password(config: &AppConfig, password: &str) -> Result<Principal> {
     config.validate()?;
@@ -838,6 +860,8 @@ pub async fn run_daemon_with_config_file(
     );
 
     let (autoconnect_stop, autoconnect_shutdown) = tokio::sync::watch::channel(false);
+    let vpn_autoconnect_task =
+        spawn_vpn_autoconnect(autoconnect_control.clone(), autoconnect_shutdown.clone());
     let autoconnect_task = spawn_wifi_autoconnect(autoconnect_control, autoconnect_shutdown);
     // The API normally follows the process shutdown signal. A failed network
     // reconciler also stops it: keeping the control plane writable after the
@@ -880,6 +904,7 @@ pub async fn run_daemon_with_config_file(
     };
     let shutdown_tasks = [
         autoconnect_task.abort_handle(),
+        vpn_autoconnect_task.abort_handle(),
         integrity_task.abort_handle(),
         liveness_task.abort_handle(),
         reconcile_task.abort_handle(),
@@ -896,6 +921,7 @@ pub async fn run_daemon_with_config_file(
             let _ = autoconnect_stop.send(true);
             // Finish any in-flight scan/activation before rolling back and stopping runtimes.
             let _ = autoconnect_task.await;
+            let _ = vpn_autoconnect_task.await;
 
             // Stop background dataplane repair before explicit transaction rollback.
             let _ = integrity_stop.send(true);

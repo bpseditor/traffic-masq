@@ -28,6 +28,13 @@ impl WireGuardVpnDriver {
         }
     }
 
+    pub async fn enable_keepalive(&self, interface: &str) -> Result<(), VpnDriverError> {
+        Ok(self.provider.enable_keepalive(interface).await?)
+    }
+    pub async fn latest_handshake(&self, interface: &str) -> Result<Option<u64>, VpnDriverError> {
+        Ok(self.provider.latest_handshake(interface).await?)
+    }
+
     async fn prepare_peers(
         &self,
         profile: &WireGuardProfile,

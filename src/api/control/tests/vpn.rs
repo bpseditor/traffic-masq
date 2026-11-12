@@ -557,3 +557,295 @@ async fn standalone_failed_tunnel_restore_reinstates_protection_and_retains_reco
         committed.revision + 1
     );
 }
+
+#[tokio::test]
+async fn vpn_config_can_be_read_and_updated_without_exposing_debug_secrets() {
+    let (service, _directory) = vpn_enabled_service().await;
+    let original = valid_vpn_profile_contents();
+    let name = "editable.conf".to_string();
+    assert!(matches!(
+        service
+            .dispatch(Request::VpnImportProfile {
+                name: name.clone(),
+                contents: original.clone(),
+                forwarding: None,
+            })
+            .await,
+        Response::VpnProfileImported { .. }
+    ));
+    let response = service
+        .dispatch(Request::VpnReadProfile { name: name.clone() })
+        .await;
+    assert!(!format!("{response:?}").contains("PrivateKey"));
+    match response {
+        Response::VpnProfileContents { contents, .. } => assert_eq!(&*contents.0, &original),
+        other => panic!("unexpected response: {other:?}"),
+    }
+    let updated = format!("{original}\n# Edited configuration\n");
+    assert!(matches!(
+        service
+            .dispatch(Request::VpnImportProfile {
+                name: name.clone(),
+                contents: updated.clone(),
+                forwarding: None,
+            })
+            .await,
+        Response::VpnProfileImported { .. }
+    ));
+    match service.dispatch(Request::VpnReadProfile { name }).await {
+        Response::VpnProfileContents { contents, .. } => assert_eq!(&*contents.0, &updated),
+        other => panic!("unexpected response: {other:?}"),
+    }
+    assert!(matches!(
+        service
+            .dispatch(Request::VpnReadProfile {
+                name: "../escape.conf".into()
+            })
+            .await,
+        Response::Error { .. }
+    ));
+}
+
+#[tokio::test]
+async fn vpn_autoconnect_settings_default_validate_and_persist() {
+    let (service, _directory) = vpn_enabled_service().await;
+    match service.dispatch(Request::GetVpnAutoconnect).await {
+        Response::VpnAutoconnect { settings } => {
+            assert_eq!(settings.attempts, 5);
+            assert!(!settings.fallback_direct);
+            assert!(settings.profile.is_none());
+        }
+        other => panic!("unexpected: {other:?}"),
+    }
+    let settings = traffic_masq_protocol::VpnAutoconnectSettings {
+        profile: None,
+        attempts: 0,
+        fallback_direct: true,
+    };
+    assert!(matches!(
+        service
+            .dispatch(Request::SetVpnAutoconnect { settings })
+            .await,
+        Response::Error { .. }
+    ));
+    let settings = traffic_masq_protocol::VpnAutoconnectSettings {
+        profile: Some("missing.conf".into()),
+        ..Default::default()
+    };
+    assert!(matches!(
+        service
+            .dispatch(Request::SetVpnAutoconnect { settings })
+            .await,
+        Response::Error { .. }
+    ));
+    let settings = traffic_masq_protocol::VpnAutoconnectSettings {
+        attempts: 7,
+        fallback_direct: true,
+        ..Default::default()
+    };
+    assert!(matches!(
+        service
+            .dispatch(Request::SetVpnAutoconnect {
+                settings: settings.clone()
+            })
+            .await,
+        Response::VpnAutoconnect { .. }
+    ));
+    match service.dispatch(Request::GetVpnAutoconnect).await {
+        Response::VpnAutoconnect { settings: actual } => assert_eq!(actual, settings),
+        other => panic!("unexpected: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn vpn_autoconnect_exhaustion_keeps_tunnel_by_default_and_disconnects_only_when_opted_in() {
+    for fallback_direct in [false, true] {
+        let (service, _directory) = vpn_enabled_service().await;
+        let name = "retry.conf".to_string();
+        assert!(matches!(
+            service
+                .dispatch(Request::VpnImportProfile {
+                    name: name.clone(),
+                    contents: valid_vpn_profile_contents(),
+                    forwarding: None,
+                })
+                .await,
+            Response::VpnProfileImported { .. }
+        ));
+        commit_vpn_request(&service, Request::VpnActivate { name: name.clone() }).await;
+        let settings = traffic_masq_protocol::VpnAutoconnectSettings {
+            profile: Some(name),
+            fallback_direct,
+            ..Default::default()
+        };
+        assert!(matches!(
+            service
+                .dispatch(Request::SetVpnAutoconnect { settings })
+                .await,
+            Response::VpnAutoconnect { .. }
+        ));
+        for _ in 0..5 {
+            service.autoconnect_vpn_once().await.unwrap();
+            assert!(service
+                .vpn
+                .as_ref()
+                .unwrap()
+                .status()
+                .await
+                .unwrap()
+                .is_some());
+        }
+        service.autoconnect_vpn_once().await.unwrap();
+        assert_eq!(
+            service
+                .vpn
+                .as_ref()
+                .unwrap()
+                .status()
+                .await
+                .unwrap()
+                .is_none(),
+            fallback_direct
+        );
+        // Exhaustion must not silently restart the retry budget.
+        service.autoconnect_vpn_once().await.unwrap();
+        assert_eq!(
+            service
+                .vpn
+                .as_ref()
+                .unwrap()
+                .status()
+                .await
+                .unwrap()
+                .is_none(),
+            fallback_direct
+        );
+    }
+}
+
+#[tokio::test]
+async fn vpn_autoconnect_commits_only_after_handshake_and_caps_failed_startup_attempts() {
+    for healthy in [false, true] {
+        let mut provider = FakeVpnProvider::default();
+        provider.handshake = healthy.then(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        });
+        let (service, _directory) = vpn_enabled_service_with_provider(provider).await;
+        service
+            .dispatch(Request::VpnImportProfile {
+                name: "auto.conf".into(),
+                contents: valid_vpn_profile_contents(),
+                forwarding: None,
+            })
+            .await;
+        service
+            .dispatch(Request::SetVpnAutoconnect {
+                settings: traffic_masq_protocol::VpnAutoconnectSettings {
+                    profile: Some("auto.conf".into()),
+                    ..Default::default()
+                },
+            })
+            .await;
+        service.autoconnect_vpn_once().await.unwrap();
+        assert_eq!(
+            service.router.as_ref().unwrap().status().await,
+            crate::core::router_transaction::CoordinatorStatus::Pending
+        );
+        if healthy {
+            service.autoconnect_vpn_once().await.unwrap();
+            assert_eq!(
+                service.router.as_ref().unwrap().status().await,
+                crate::core::router_transaction::CoordinatorStatus::Idle
+            );
+            assert!(service
+                .vpn
+                .as_ref()
+                .unwrap()
+                .status()
+                .await
+                .unwrap()
+                .is_some());
+        } else {
+            for _ in 1..5 {
+                service.autoconnect_vpn_once().await.unwrap();
+                assert_eq!(
+                    service.router.as_ref().unwrap().status().await,
+                    crate::core::router_transaction::CoordinatorStatus::Pending
+                );
+            }
+            for _ in 0..2 {
+                service.autoconnect_vpn_once().await.unwrap();
+                assert_eq!(
+                    service.router.as_ref().unwrap().status().await,
+                    crate::core::router_transaction::CoordinatorStatus::Idle
+                );
+                assert!(service
+                    .vpn
+                    .as_ref()
+                    .unwrap()
+                    .status()
+                    .await
+                    .unwrap()
+                    .is_none());
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn vpn_autoconnect_never_replaces_a_new_manual_selection() {
+    let (service, _directory) = vpn_enabled_service().await;
+    for name in ["automatic.conf", "manual.conf"] {
+        service
+            .dispatch(Request::VpnImportProfile {
+                name: name.into(),
+                contents: valid_vpn_profile_contents(),
+                forwarding: None,
+            })
+            .await;
+    }
+    service
+        .dispatch(Request::SetVpnAutoconnect {
+            settings: traffic_masq_protocol::VpnAutoconnectSettings {
+                profile: Some("automatic.conf".into()),
+                fallback_direct: true,
+                ..Default::default()
+            },
+        })
+        .await;
+    commit_vpn_request(
+        &service,
+        Request::VpnActivate {
+            name: "manual.conf".into(),
+        },
+    )
+    .await;
+    for request in [
+        Request::VpnAutoconnectAttempt {
+            profile: "automatic.conf".into(),
+        },
+        Request::VpnAutoconnectFallback {
+            profile: "automatic.conf".into(),
+        },
+    ] {
+        assert!(matches!(
+            service.dispatch(request).await,
+            Response::Error { .. }
+        ));
+        assert_eq!(
+            service
+                .vpn
+                .as_ref()
+                .unwrap()
+                .status()
+                .await
+                .unwrap()
+                .unwrap()
+                .profile_name,
+            "manual.conf"
+        );
+    }
+}

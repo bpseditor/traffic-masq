@@ -6,8 +6,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-    MouseButton, MouseEvent, MouseEventKind,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -415,7 +415,7 @@ impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen);
-        let _ = execute!(io::stdout(), DisableMouseCapture);
+        let _ = execute!(io::stdout(), DisableBracketedPaste, DisableMouseCapture);
         let _ = execute!(io::stdout(), crossterm::cursor::Show);
     }
 }
@@ -543,6 +543,7 @@ async fn run_loop(
     let mut has_authenticated = client.is_authenticated().await;
     let mut last_refresh: Option<Instant> = None;
     let mut queued_input: Option<Event> = None;
+    let mut bracketed_paste = false;
 
     let log_store = match if direct {
         session::SessionStore::direct()
@@ -568,6 +569,10 @@ async fn run_loop(
                 logs::flush(&mut app, store).await;
             }
             if !direct && !client.is_authenticated().await {
+                if bracketed_paste {
+                    execute!(io::stdout(), DisableBracketedPaste)?;
+                    bracketed_paste = false;
+                }
                 if !reauthenticate(terminal, client, pending_deadline(&app), !has_authenticated)
                     .await?
                 {
@@ -676,6 +681,15 @@ async fn run_loop(
                 }
             }
 
+            let wants_paste = app.screen == Screen::VpnImport;
+            if wants_paste != bracketed_paste {
+                if wants_paste {
+                    execute!(io::stdout(), EnableBracketedPaste)?;
+                } else {
+                    execute!(io::stdout(), DisableBracketedPaste)?;
+                }
+                bracketed_paste = wants_paste;
+            }
             let poll_timeout = refresh_interval
                 .saturating_sub(last_refresh.map_or(Duration::ZERO, |t| t.elapsed()))
                 .min(Duration::from_millis(100));
@@ -699,6 +713,26 @@ async fn run_loop(
                     match input {
                         Event::Key(key) if key.kind == event::KeyEventKind::Press => {
                             handle_key_event(&mut app, key, client, direct).await;
+                        }
+                        Event::Paste(text) => {
+                            if app.screen == Screen::VpnImport
+                                && app.ui.input_enabled
+                                && !app.help_open
+                                && !app.message_open
+                            {
+                                if let Some(editor) = app.vpn_import.as_mut() {
+                                    let multiline = editor.field == vpn::VpnImportField::Config;
+                                    if let Some(mut input) = editor.active_editor() {
+                                        for c in
+                                            text.replace("\r\n", "\n").replace('\r', "\n").chars()
+                                        {
+                                            if !c.is_control() || (multiline && c == '\n') {
+                                                input.insert(c);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                         Event::Mouse(mouse) => {
                             handle_mouse(&mut app, mouse, client, direct).await;

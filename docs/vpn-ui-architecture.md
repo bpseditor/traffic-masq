@@ -125,3 +125,54 @@ requires forwarding IP, port and password. Save uses the existing
 enable VPN or activate a tunnel. Incomplete forms remain local until saved;
 cancelling discards them. Private keys and forwarding passwords are masked and
 held in zeroizing editor storage. Import from files remains available separately.
+
+## Configuration import and editing
+
+Create retains individual fields and offers Local file and Paste config. Paths
+refer to the TUI machine. The full-text editor supports multiline paste, Enter
+for a newline, arrows/Home/End for navigation and Tab to leave the editor.
+Open profile → Edit config reads the original configuration through an
+administrator-only API. Saving uses existing validation and atomic replacement;
+profiles referenced by active or saved router intent remain protected.
+
+## Standalone autoconnect
+
+VPN settings has a separate autoconnect area. Select a library profile before
+enabling it. Settings persist in vpn-autoconnect.json in the daemon state
+directory. Autoconnect is off by default, with five attempts and no direct
+fallback. The limit is configurable from 1 to 20. Changing settings or restarting
+the daemon resets the retry budget.
+
+The daemon checks every 15 seconds independently of Wi-Fi scans. VPN must be
+enabled and no saved chain may be configured. Tentative activation uses the
+router transaction coordinator. All peers must have a handshake no older than
+180 seconds before automatic commit. Runtime persistent keepalive is enabled
+at most every 25 seconds, preserving shorter configured intervals, to initiate
+handshakes without application traffic. Saved profile bytes are unchanged.
+An existing tunnel uses WireGuard's handshake retransmissions during each retry
+window rather than repeated interface destruction.
+
+Unsuccessful tentative activations roll back. After exhaustion, the default
+leaves the prior state alone. Optional direct fallback disconnects the tunnel
+and switches policy to Direct in one transaction, through the normal mutation
+and recovery gates. Chains and another manually selected active profile are
+not replaced. Disable autoconnect before intentionally leaving its profile
+disconnected.
+
+## Transport path observation
+
+Open profile displays active endpoints with gateway, device and routing table
+from a kernel destination lookup over rtnetlink. Refresh updates this view.
+For wgobfs the endpoint is the external forwarding server. An endpoint resolving
+into its own tunnel is flagged. IPv6 lookup is explicitly unavailable.
+
+This does not install an extra host route or pin a gateway: existing rules and
+routes determine egress. A physical default route may already provide the same
+path as an endpoint /32. This does not remedy the separately documented missing
+relay-hop WireGuard fwmark support.
+
+Live-test observation: the SSH test host's kernel ignores IFLA_IFALIAS included
+in WireGuard RTM_NEWLINK, although setting an alias afterward works. The existing
+launch-marker crash-cleanup assumption therefore remains a separate limitation
+on that host. The handshake test uses a disposable network namespace and does
+not claim to validate launch-marker recovery.

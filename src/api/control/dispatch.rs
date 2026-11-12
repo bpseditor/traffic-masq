@@ -415,6 +415,16 @@ impl ControlService {
             Request::VpnImportFromSource { name, forwarding } => {
                 self.vpn_import_from_source(name, forwarding).await
             }
+            Request::VpnReadProfile { name } => self.vpn_read_profile(name).await,
+            Request::VpnTransportPaths => self.vpn_transport_paths().await,
+            Request::VpnAutoconnectAttempt { profile } => {
+                self.vpn_autoconnect_attempt(profile).await
+            }
+            Request::VpnAutoconnectFallback { profile } => {
+                self.vpn_autoconnect_fallback(profile).await
+            }
+            Request::GetVpnAutoconnect => self.get_vpn_autoconnect().await,
+            Request::SetVpnAutoconnect { settings } => self.set_vpn_autoconnect(settings).await,
             Request::VpnListProfiles => self.vpn_list_profiles().await,
             Request::VpnImportProfile {
                 name,

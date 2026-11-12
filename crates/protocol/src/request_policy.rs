@@ -117,6 +117,10 @@ impl<Interface, Proposal> Request<Interface, Proposal> {
             Self::RouterProvisioningRepair => "router_provisioning_repair",
             Self::VpnListSources => "vpn_list_sources",
             Self::VpnImportFromSource { .. } => "vpn_import_from_source",
+            Self::VpnReadProfile { .. } => "vpn_read_profile",
+            Self::VpnTransportPaths => "vpn_transport_paths",
+            Self::GetVpnAutoconnect => "get_vpn_autoconnect",
+            Self::SetVpnAutoconnect { .. } => "set_vpn_autoconnect",
             Self::VpnListProfiles => "vpn_list_profiles",
             Self::VpnImportProfile { .. } => "vpn_import_profile",
             Self::VpnDeleteProfile { .. } => "vpn_delete_profile",
@@ -124,6 +128,8 @@ impl<Interface, Proposal> Request<Interface, Proposal> {
             Self::SetVpnEnabled { .. } => "set_vpn_enabled",
             Self::VpnStatus => "vpn_status",
             Self::VpnActivate { .. } => "vpn_activate",
+            Self::VpnAutoconnectAttempt { .. } => "vpn_autoconnect_attempt",
+            Self::VpnAutoconnectFallback { .. } => "vpn_autoconnect_fallback",
             Self::VpnDeactivate => "vpn_deactivate",
             Self::VpnPolicyStatus => "vpn_policy_status",
             Self::VpnPolicySetMode { .. } => "vpn_policy_set_mode",
@@ -181,6 +187,8 @@ impl<Interface, Proposal> Request<Interface, Proposal> {
             | GetRouterConfig
             | RouterProvisioningStatus
             | VpnListProfiles
+            | VpnTransportPaths
+            | GetVpnAutoconnect
             | GetVpnConfig
             | VpnStatus
             | VpnPolicyStatus
@@ -317,6 +325,8 @@ impl<Interface, Proposal> Request<Interface, Proposal> {
             },
             SaveRouterIntent { .. }
             | VpnImportFromSource { .. }
+            | SetVpnAutoconnect { .. }
+            | VpnReadProfile { .. }
             | VpnImportProfile { .. }
             | VpnDeleteProfile { .. }
             | SaveWifiApProfile { .. }
@@ -347,6 +357,8 @@ impl<Interface, Proposal> Request<Interface, Proposal> {
             | SetVpnEnabled { .. }
             | VpnActivate { .. }
             | VpnDeactivate
+            | VpnAutoconnectAttempt { .. }
+            | VpnAutoconnectFallback { .. }
             | VpnPolicySetMode { .. }
             | VpnPolicyClearMode => RequestPolicy {
                 administrator: true,
