@@ -33,6 +33,17 @@ sudo traffic-masqd config path
 sudo traffic-masqd config show
 ```
 
+## Existing multi-hop VPN configurations
+
+This version admits at most one VPN hop. Before upgrading an installation with
+multiple configured hops, use the previous version's confirmed router flow to
+reduce the chain to one hop or remove it, and finish pending recovery first.
+Multi-hop configuration is rejected rather than silently truncated. Preserve
+configuration, committed overrides and recovery journals if startup is blocked;
+do not delete or hand-edit recovery evidence to bypass validation. The persisted
+schema is unchanged, but older versions can admit chains whose nested transport
+routing this version deliberately refuses to advertise as working.
+
 ## First response
 
 When `traffic-masqd start` reports that startup is blocked by persisted recovery

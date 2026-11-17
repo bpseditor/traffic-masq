@@ -40,6 +40,12 @@ previous VPN protection before reconstructing a tunnel; a failed tunnel restore
 must retain the kill switch and recovery evidence. Confirm
 Direct policy before disconnecting a protected standalone tunnel. Router VPN
 chains and standalone policy cannot occupy the same reserved routing namespace.
+Autoconnect refresh of an already active standalone tunnel uses this coordinator
+too: it cannot bypass a pending transaction, and peer/transport replacement has
+a durable snapshot and compensation owner before effects. Handshake readiness
+is checked before apply becomes confirmable. Route and firewall integrity checks
+use observed dataplane state, so a stale handshake alone cannot trigger a
+dataplane repair.
 
 Internet-sharing previews carry the committed revision and observed snapshot
 fingerprint. TUI apply sends both expectations back; the daemon rejects a stale

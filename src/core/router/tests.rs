@@ -32,21 +32,16 @@ fn vpn_chain_requires_enabled_vpn_runtime() {
 }
 
 #[test]
-fn route_host_traffic_reaches_only_the_exit_hop_policy() {
+fn route_host_traffic_reaches_the_single_exit_hop_policy() {
     use crate::core::vpn_chain::VpnHopKind;
     let mut config = enabled_config();
     config.vpn.enabled = true;
-    config.router.vpn_chain = vec![
-        crate::config::VpnHopConfig {
-            profile_name: "first.conf".into(),
-        },
-        crate::config::VpnHopConfig {
-            profile_name: "second.conf".into(),
-        },
-    ];
+    config.router.vpn_chain = vec![crate::config::VpnHopConfig {
+        profile_name: "first.conf".into(),
+    }];
 
     let off = RouterDesired::from_effective_config(&config).unwrap();
-    let VpnHopKind::Exit { policy } = &off.vpn_chain[1].kind else {
+    let VpnHopKind::Exit { policy } = &off.vpn_chain[0].kind else {
         panic!("last hop is the exit");
     };
     assert!(!policy.route_host_traffic);
@@ -54,11 +49,11 @@ fn route_host_traffic_reaches_only_the_exit_hop_policy() {
 
     config.router.route_host_traffic = true;
     let on = RouterDesired::from_effective_config(&config).unwrap();
-    let VpnHopKind::Exit { policy } = &on.vpn_chain[1].kind else {
+    let VpnHopKind::Exit { policy } = &on.vpn_chain[0].kind else {
         panic!("last hop is the exit");
     };
     assert!(policy.route_host_traffic);
-    assert_eq!(policy.chain_profiles, ["first.conf", "second.conf"]);
+    assert_eq!(policy.chain_profiles, ["first.conf"]);
     assert!(
         policy.host_endpoints.is_empty(),
         "endpoints are resolved at apply time"

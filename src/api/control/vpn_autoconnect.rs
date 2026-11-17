@@ -5,9 +5,10 @@ use traffic_masq_protocol::VpnAutoconnectSettings;
 #[derive(Default)]
 pub(super) struct State {
     settings: Option<VpnAutoconnectSettings>,
-    attempts: u8,
+    pub(super) attempts: u8,
     pending: Option<String>,
-    exhausted: bool,
+    pub(super) exhausted: bool,
+    retry_after: Option<tokio::time::Instant>,
 }
 
 impl ControlService {
@@ -84,7 +85,14 @@ impl ControlService {
                 message: "VPN autoconnect selection changed; attempt cancelled".into(),
             };
         }
-        self.vpn_activate(profile).await
+        // Refreshing an existing tunnel is still a runtime mutation. Use the
+        // coordinator for pending admission, a durable snapshot and compensation.
+        self.apply_standalone_vpn(
+            true,
+            Some(profile),
+            self.overrides.snapshot().await.vpn_mode,
+        )
+        .await
     }
 
     // Called through dispatch so recovery and mutation admission are identical
@@ -142,34 +150,38 @@ impl ControlService {
         if active.as_ref().is_some_and(|a| a.profile_name != *name) {
             return Ok(());
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs();
         let healthy = if let Some(active) = active.as_ref().filter(|a| a.up) {
-            vpn.latest_handshake(&active.interface)
-                .await?
-                .is_some_and(|at| at <= now && now - at <= 180)
+            vpn.is_healthy(&active.interface).await?
         } else {
             false
         };
         if healthy {
-            if let Some(token) = state.pending.take() {
+            if let Some(token) = state.pending.clone() {
                 let response = self.dispatch(Request::RouterCommit { token }).await;
                 anyhow::ensure!(
                     matches!(response, Response::RouterCommitted { .. }),
                     "VPN autoconnect commit failed: {response:?}"
                 );
+                state.pending = None;
             }
+            state.retry_after = None;
             state.attempts = 0;
             state.exhausted = false;
             return Ok(());
         }
-        if let Some(token) = state.pending.take() {
+        if state
+            .retry_after
+            .is_some_and(|deadline| tokio::time::Instant::now() < deadline)
+        {
+            return Ok(());
+        }
+        if let Some(token) = state.pending.clone() {
             let response = self.dispatch(Request::RouterRollback { token }).await;
             anyhow::ensure!(
                 matches!(response, Response::RouterRolledBack),
                 "VPN autoconnect rollback failed: {response:?}"
             );
+            state.pending = None;
         }
         if state.exhausted {
             return Ok(());
@@ -204,34 +216,16 @@ impl ControlService {
             tracing::warn!(attempts = state.attempts, "VPN autoconnect exhausted");
             return Ok(());
         }
-        if let Some(active) = vpn.status().await? {
-            let _admission = self.network_mutations.admit().await;
-            let _execution = self.network_mutations.execute().await;
-            self.overrides
-                .recovery()
-                .check_scope(&self.config.runtime.state_dir, None)?;
-            if vpn
-                .status()
-                .await?
-                .is_none_or(|current| current.profile_name != *name)
-            {
-                return Ok(());
-            }
-            vpn.enable_keepalive(&active.interface).await?;
-        }
         state.attempts += 1;
         let response = self
             .dispatch(Request::VpnAutoconnectAttempt {
                 profile: name.clone(),
             })
             .await;
+        state.retry_after = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(45));
         match response {
             Response::RouterTransactionPending { token, .. } => {
                 state.pending = Some(token);
-                let _admission = self.network_mutations.admit().await;
-                let _execution = self.network_mutations.execute().await;
-                vpn.enable_keepalive(crate::vpn::manager::OWNED_INTERFACE_NAME)
-                    .await?;
             }
             Response::VpnError {
                 detail: VpnErrorDetail::AlreadyActive,

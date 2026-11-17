@@ -184,6 +184,12 @@ where
             .executor
             .execute(&["--json", "list", "ruleset"], &[])
             .context("failed to observe VPN policy firewall ruleset")?;
+        let output = super::recover_table_comment(
+            &self.executor,
+            &output,
+            NFT_VPN_TABLE,
+            NFT_VPN_TABLE_COMMENT,
+        )?;
         parse_owned_vpn_firewall_state(&output)
     }
 
@@ -282,7 +288,7 @@ fn render_vpn_nftables_batch(
             (
                 format!("  set vpn_endpoints {{ type ipv4_addr; elements = {{ {endpoints} }} }}\n"),
                 format!(
-                    "  chain host_mark {{\n    type route hook output priority mangle; policy accept;\n    oifname \"lo\" return\n    ip daddr @vpn_endpoints return\n    ip daddr @protected_subnets return\n    ip daddr {{ 224.0.0.0/4, 255.255.255.255 }} return\n    udp dport {{ 67, 68 }} return\n    meta nfproto ipv4 meta mark set {mark}\n  }}\n  chain host_killswitch {{\n    type filter hook output priority filter; policy accept;\n    meta nfproto ipv4 meta mark and {mask} == {mark} oifname != \"{vpn_iface}\" drop\n    oifname != \"lo\" ip6 daddr != {{ fe80::/10, ff00::/8 }} drop\n  }}\n",
+                    "  chain host_mark {{\n    type route hook output priority mangle; policy accept;\n    oifname \"lo\" return\n    ip daddr @vpn_endpoints return\n    ip daddr @protected_subnets return\n    ip daddr {{ 224.0.0.0/4, 255.255.255.255 }} return\n    udp dport {{ 67, 68 }} return\n    meta mark and 0xff000000 == 0x55000000 return\n    meta nfproto ipv4 meta mark set {mark}\n  }}\n  chain host_killswitch {{\n    type filter hook output priority filter; policy accept;\n    meta nfproto ipv4 meta mark and {mask} == {mark} oifname != \"{vpn_iface}\" drop\n    oifname != \"lo\" ip6 daddr != {{ fe80::/10, ff00::/8 }} drop\n  }}\n",
                     vpn_iface = desired.vpn_interface,
                 ),
             )
@@ -290,8 +296,8 @@ fn render_vpn_nftables_batch(
     };
 
     batch.push_str(&format!(
-        "table inet {NFT_VPN_TABLE} {{\n  comment \"{NFT_VPN_TABLE_COMMENT}\"\n  chain metadata {{\n{metadata_rules}  }}\n  set protected_subnets {{ type ipv4_addr; flags interval; elements = {{ {subnets} }} }}\n{host_set}  chain vpn_mark {{\n    type filter hook prerouting priority mangle; policy accept;\n    ip saddr @protected_subnets meta mark set {mark}\n  }}\n  chain postrouting {{\n    type nat hook postrouting priority srcnat; policy accept;\n{nat}  }}\n  chain killswitch {{\n    type filter hook forward priority filter; policy accept;\n    meta mark and {mask} == {mark} oifname \"{uplink}\" drop\n  }}\n{host_chains}}}\n",
-        uplink = desired.physical_uplink,
+        "table inet {NFT_VPN_TABLE} {{\n  comment \"{NFT_VPN_TABLE_COMMENT}\"\n  chain metadata {{\n{metadata_rules}  }}\n  set protected_subnets {{ type ipv4_addr; flags interval; elements = {{ {subnets} }} }}\n{host_set}  chain vpn_mark {{\n    type filter hook prerouting priority mangle; policy accept;\n    ip saddr @protected_subnets meta mark set {mark}\n  }}\n  chain postrouting {{\n    type nat hook postrouting priority srcnat; policy accept;\n{nat}  }}\n  chain killswitch {{\n    type filter hook forward priority filter; policy accept;\n    meta nfproto ipv6 drop\n    meta mark and {mask} == {mark} oifname != \"{vpn_iface}\" drop\n  }}\n  chain dns_guard {{\n    type filter hook input priority filter; policy accept;\n    ip saddr @protected_subnets udp dport {{ 53, 853 }} drop\n    ip saddr @protected_subnets tcp dport {{ 53, 853 }} drop\n    meta nfproto ipv6 iifname != \"lo\" udp dport {{ 53, 853 }} drop\n    meta nfproto ipv6 iifname != \"lo\" tcp dport {{ 53, 853 }} drop\n  }}\n{host_chains}}}\n",
+        vpn_iface = desired.vpn_interface,
     ));
     Ok(batch)
 }
@@ -307,6 +313,13 @@ pub enum VpnFirewallIntegrity {
 pub struct VpnFirewallObservation {
     pub desired: Option<VpnPolicyFirewallDesired>,
     pub integrity: VpnFirewallIntegrity,
+}
+
+/// Accept only nft's table header immediately followed by its ownership
+/// comment. A matching comment on a nested chain/rule cannot establish ownership.
+#[cfg(test)]
+fn verify_text_table_owner(output: &[u8]) -> Result<()> {
+    super::verify_text_table_comment(output, NFT_VPN_TABLE, NFT_VPN_TABLE_COMMENT)
 }
 
 fn parse_owned_vpn_firewall_state(output: &[u8]) -> Result<VpnFirewallObservation> {
@@ -438,6 +451,15 @@ fn host_rule_expressions(vpn_interface: &str) -> (Vec<Value>, Vec<Value>) {
                 condition("==", payload("udp", "dport"), json!({"set": [67, 68]})),
                 ret
             ]),
+            // Encrypted hop sockets have their own routing selectors.
+            json!([
+                condition(
+                    "==",
+                    json!({"&": [meta("mark"), 0xff000000u32]}),
+                    json!(0x55000000u32)
+                ),
+                ret
+            ]),
             json!([ipv4, {"mangle": {"key": meta("mark"), "value": mark}}]),
         ],
         vec![
@@ -448,6 +470,35 @@ fn host_rule_expressions(vpn_interface: &str) -> (Vec<Value>, Vec<Value>) {
                 condition("!=", payload("ip6", "daddr"), json!({"set": ["fe80::/10", "ff00::/8"]})), {"drop": null}]),
         ],
     )
+}
+
+fn ipv6_drop_expression() -> Value {
+    serde_json::json!([
+        {"match": {"op": "==", "left": {"meta": {"key": "nfproto"}}, "right": "ipv6"}},
+        {"drop": null}
+    ])
+}
+
+fn dns_guard_expressions() -> Vec<Value> {
+    let mut rules = Vec::new();
+    for ipv6 in [false, true] {
+        for protocol in ["udp", "tcp"] {
+            let mut expr = if ipv6 {
+                vec![
+                    serde_json::json!({"match": {"op": "==", "left": {"meta": {"key": "nfproto"}}, "right": "ipv6"}}),
+                    serde_json::json!({"match": {"op": "!=", "left": {"meta": {"key": "iifname"}}, "right": "lo"}}),
+                ]
+            } else {
+                vec![
+                    serde_json::json!({"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "saddr"}}, "right": "@protected_subnets"}}),
+                ]
+            };
+            expr.push(serde_json::json!({"match": {"op": "==", "left": {"payload": {"protocol": protocol, "field": "dport"}}, "right": {"set": [53, 853]}}}));
+            expr.push(serde_json::json!({"drop": null}));
+            rules.push(Value::Array(expr));
+        }
+    }
+    rules
 }
 
 /// nft emits prefixes as objects and may reorder anonymous set elements.
@@ -595,12 +646,30 @@ fn vpn_firewall_structure_is_intact(entries: &[Value], desired: &VpnPolicyFirewa
             })
         }
     };
-    let chains_ok = metadata_ok
+    let dns_rules: Vec<_> = rules
+        .iter()
+        .filter(|rule| string_field(rule, "chain") == Some("dns_guard"))
+        .collect();
+    let expected_dns = dns_guard_expressions();
+    let dns_ok = chains.iter().any(|chain| {
+        string_field(chain, "name") == Some("dns_guard")
+            && string_field(chain, "type") == Some("filter")
+            && string_field(chain, "hook") == Some("input")
+            && chain.get("prio").and_then(Value::as_i64) == Some(0)
+            && string_field(chain, "policy") == Some("accept")
+    }) && dns_rules.len() == expected_dns.len()
+        && dns_rules.iter().zip(&expected_dns).all(|(rule, expected)| {
+            rule.get("expr").is_some_and(|actual| {
+                normalize_expression(actual) == normalize_expression(expected)
+            })
+        });
+    let chains_ok = dns_ok
+        && metadata_ok
         && mark_chain_ok
         && postrouting_chain_ok
         && killswitch_chain_ok
         && host_chains_ok
-        && chains.len() == if host.is_some() { 6 } else { 4 };
+        && chains.len() == if host.is_some() { 7 } else { 5 };
 
     let expected_subnets = desired
         .protected_subnets
@@ -679,13 +748,16 @@ fn vpn_firewall_structure_is_intact(entries: &[Value], desired: &VpnPolicyFirewa
                     .is_some_and(|actual| normalize_expression(actual) == expected)
         }
     };
-    let killswitch_ok = killswitch_rules.len() == 1
-        && killswitch_rules.iter().any(|rule| {
-            let rule = &normalize_expression(rule);
-            rule_has_tokens(rule, &["oifname", desired.physical_uplink.as_str()])
-                && value_contains_key(rule, "drop")
-                && value_contains_number(rule, fw_mark)
-                && value_contains_number(rule, fw_mask)
+    let killswitch_ok = killswitch_rules.len() == 2
+        && killswitch_rules[0]
+            .get("expr")
+            .is_some_and(|actual| normalize_expression(actual) == ipv6_drop_expression())
+        && killswitch_rules[1].get("expr").is_some_and(|actual| {
+            normalize_expression(actual) == serde_json::json!([
+                {"match": {"op": "==", "left": {"&": [{"meta": {"key": "mark"}}, fw_mask]}, "right": fw_mark}},
+                {"match": {"op": "!=", "left": {"meta": {"key": "oifname"}}, "right": desired.vpn_interface}},
+                {"drop": null}
+            ])
         });
 
     chains_ok
@@ -806,12 +878,22 @@ pub mod test_support {
                     { "match": { "op": "==", "left": { "payload": { "protocol": "ip", "field": "saddr" } }, "right": "@protected_subnets" } },
                     { "mangle": { "key": { "meta": { "key": "mark" } }, "value": fw_mark } }
                 ])),
+                vpn_rule("killswitch", ipv6_drop_expression()),
                 vpn_rule("killswitch", serde_json::json!([
                     { "match": { "op": "==", "left": { "&": [{ "meta": { "key": "mark" } }, fw_mask] }, "right": fw_mark } },
-                    { "match": { "op": "==", "left": { "meta": { "key": "oifname" } }, "right": desired.physical_uplink } },
+                    { "match": { "op": "!=", "left": { "meta": { "key": "oifname" } }, "right": desired.vpn_interface } },
                     { "drop": null }
                 ])),
             ]);
+            entries.push(serde_json::json!({"chain": {
+                "family": NFT_FAMILY, "table": NFT_VPN_TABLE, "name": "dns_guard",
+                "type": "filter", "hook": "input", "prio": 0, "policy": "accept"
+            }}));
+            entries.extend(
+                dns_guard_expressions()
+                    .into_iter()
+                    .map(|expr| vpn_rule("dns_guard", expr)),
+            );
             if let Some(expression) = nat_rule_expression(desired) {
                 entries.push(vpn_rule("postrouting", expression));
             }
@@ -859,3 +941,24 @@ fn masquerades_forwarded(value: &bool) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod text_owner_tests {
+    use super::verify_text_table_owner;
+
+    #[test]
+    fn requires_comment_immediately_inside_exact_table() {
+        assert!(verify_text_table_owner(
+            b"table inet traffic_masq_vpn {\n\tcomment \"traffic-masq:vpn:v1\"\n}"
+        )
+        .is_ok());
+        for text in [
+            "table inet traffic_masq_vpn {\nchain metadata {\ncomment \"traffic-masq:vpn:v1\"\n}}",
+            "table inet foreign {\ncomment \"traffic-masq:vpn:v1\"\n}",
+            "table inet traffic_masq_vpn {\ncomment \"foreign\"\n}",
+            "table inet traffic_masq_vpn {\n}",
+        ] {
+            assert!(verify_text_table_owner(text.as_bytes()).is_err());
+        }
+    }
+}

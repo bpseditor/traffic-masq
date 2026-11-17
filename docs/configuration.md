@@ -223,11 +223,12 @@ metric = 100
 bits; tables `0` and `255` are rejected. A default route requires
 `allow_default_route_change = true`. Existing foreign routes are not adopted.
 
-`vpn_chain = [{ profile_name = "first.conf" }, { profile_name = "second.conf" }]`
-selects up to eight WireGuard hops, nearest the physical uplink first, and requires
+`vpn_chain = [{ profile_name = "first.conf" }]`
+selects one WireGuard hop and requires
 `router.uplink`. Configure `forwarding` explicitly for the interfaces that should
 exchange traffic, including the VPN egress; the chain does not synthesize sharing
 rules. Explicit forwarding cannot coexist with global VPN mode `vpn`.
+Multi-hop chains are rejected until nested transport routing is fully integrated.
 
 `route_host_traffic = true` (default `false`) additionally sends the router's own
 locally generated traffic through the VPN chain. It requires a non-empty

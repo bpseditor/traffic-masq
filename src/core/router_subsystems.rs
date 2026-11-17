@@ -1213,6 +1213,10 @@ where
     async fn health_vpn_chain(&self, desired: &RouterDesired) -> Result<()> {
         self.vpn_chain.health_vpn_chain(desired).await
     }
+
+    async fn vpn_handshake_ready(&self, desired: &RouterDesired) -> Result<bool> {
+        self.vpn_chain.vpn_handshake_ready(desired).await
+    }
 }
 
 #[cfg(test)]

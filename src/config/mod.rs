@@ -184,11 +184,9 @@ pub fn validate_forwarding(rules: &[ForwardingConfig]) -> Result<()> {
     traffic_masq_protocol::validate_forwarding(rules).map_err(anyhow::Error::msg)
 }
 
-/// The maximum number of hops a persisted VPN chain may contain, matching
-/// [`crate::core::vpn_policy::MAX_VPN_HOP_INDEX`]'s bound on reserved-ID
-/// allocation so the priority-band math can never overflow into an
-/// unrelated reserved range.
-pub const MAX_VPN_CHAIN_LEN: usize = 8;
+/// Only single-hop VPN is supported until transport marking and fail-closed
+/// routing are implemented for every hop. Do not advertise inert relay rules.
+pub const MAX_VPN_CHAIN_LEN: usize = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

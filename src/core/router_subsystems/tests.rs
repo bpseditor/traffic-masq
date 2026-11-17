@@ -994,7 +994,7 @@ async fn chain_snapshot(
 }
 
 #[tokio::test]
-async fn apply_vpn_chain_activates_hops_in_order() {
+async fn multi_hop_is_rejected_before_any_interface_is_created() {
     let (subsystems, vpn_provider, net, _dir) = chain_subsystems().await;
     net.add_interface("tm-wg-0", 2).await;
     net.add_interface("tm-wg-1", 3).await;
@@ -1010,47 +1010,46 @@ async fn apply_vpn_chain_activates_hops_in_order() {
     subsystems
         .apply_vpn_chain(&plan)
         .await
-        .expect("3-hop chain activates");
-
-    for name in ["tm-wg-0", "tm-wg-1", "tm-wg-2"] {
-        assert!(
-            vpn_provider.link_exists(name).await.expect("link_exists"),
-            "{name} should be active after apply_vpn_chain"
-        );
-    }
-}
-
-/// If a mid-chain hop fails to activate, every hop this call already
-/// activated must be rolled back — in reverse order — entirely inside
-/// `apply_vpn_chain`, before it returns `Err`.
-#[tokio::test]
-async fn apply_vpn_chain_rolls_back_already_applied_hops_on_mid_chain_failure() {
-    let (subsystems, vpn_provider, net, _dir) = chain_subsystems().await;
-    net.add_interface("tm-wg-0", 2).await;
-    net.add_interface("tm-wg-1", 3).await;
-    vpn_provider.fail_create_link_for("tm-wg-2");
-
-    let plan = VpnChainPlan {
-        standalone: None,
-        hops: vec![
-            relay_hop(0, "tm-wg-0", "wan0"),
-            relay_hop(1, "tm-wg-1", "tm-wg-0"),
-            relay_hop(2, "tm-wg-2", "tm-wg-1"),
-        ],
-    };
-
-    let error = subsystems
-        .apply_vpn_chain(&plan)
-        .await
-        .expect_err("hop 2's activation failure must propagate");
-    assert!(error.to_string().contains("tm-wg-2") || error.to_string().contains("hop"));
+        .expect_err("incomplete multi-hop transport must not be advertised as working");
 
     for name in ["tm-wg-0", "tm-wg-1", "tm-wg-2"] {
         assert!(
             !vpn_provider.link_exists(name).await.expect("link_exists"),
-            "{name} must have been rolled back after the mid-chain failure"
+            "{name} must not be created by a rejected plan"
         );
     }
+}
+
+#[tokio::test]
+async fn apply_vpn_chain_restores_previous_hop_when_replacement_fails() {
+    let (subsystems, vpn_provider, net, _dir) = chain_subsystems().await;
+    net.add_interface("tm-wg-0", 2).await;
+    net.add_interface("tm-wg-1", 3).await;
+    let previous = relay_hop(0, "tm-wg-0", "wan0");
+    subsystems
+        .apply_vpn_chain(&VpnChainPlan {
+            standalone: None,
+            hops: vec![previous.clone()],
+        })
+        .await
+        .expect("previous hop activates");
+    vpn_provider.fail_create_link_for("tm-wg-1");
+
+    let error = subsystems
+        .apply_vpn_chain(&VpnChainPlan {
+            standalone: None,
+            hops: vec![relay_hop(0, "tm-wg-1", "wan0")],
+        })
+        .await
+        .expect_err("replacement activation failure must propagate");
+    assert!(error.to_string().contains("tm-wg-1"), "{error:#}");
+
+    assert!(!vpn_provider.link_exists("tm-wg-1").await.unwrap());
+    assert!(vpn_provider.link_exists("tm-wg-0").await.unwrap());
+    assert_eq!(net.rules.lock().await.len(), 1);
+    let routes = net.routes.lock().await;
+    assert_eq!(routes.len(), 1);
+    assert_eq!(routes[0].output_interface_index, Some(2));
 }
 
 #[tokio::test]
@@ -1163,8 +1162,7 @@ async fn vpn_repair_keeps_hops_outside_the_recovered_desired_chain() {
     let (subsystems, _vpn_provider, net, _dir) = chain_subsystems().await;
     net.add_interface("tm-wg-0", 2).await;
     let first = relay_hop(0, "tm-wg-0", "wan0");
-    let second = relay_hop(1, "tm-wg-1", "tm-wg-0");
-    let hops = vec![first.clone(), second];
+    let hops = vec![first];
     subsystems
         .apply_vpn_chain(&VpnChainPlan {
             standalone: None,
@@ -1173,7 +1171,7 @@ async fn vpn_repair_keeps_hops_outside_the_recovered_desired_chain() {
         .await
         .unwrap();
     let mut desired = RouterDesired::from_effective_config(&AppConfig::default()).unwrap();
-    desired.vpn_chain = vec![first];
+    desired.vpn_chain.clear();
     subsystems.prepare_recovery(&desired).await.unwrap();
     assert_eq!(chain_snapshot(&subsystems).await.previous_hops, hops);
 }

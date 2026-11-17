@@ -394,9 +394,17 @@ impl ControlService {
             Ok(active) => active,
             Err(error) => return classify_vpn_error(error),
         };
-        let tunnel_healthy = tunnel
+        let tunnel_healthy = if tunnel
             .as_ref()
-            .is_some_and(|status| status.up && status.interface == OWNED_INTERFACE_NAME);
+            .is_some_and(|status| status.up && status.interface == OWNED_INTERFACE_NAME)
+        {
+            match vpn.is_healthy(OWNED_INTERFACE_NAME).await {
+                Ok(healthy) => healthy,
+                Err(error) => return classify_vpn_error(error),
+            }
+        } else {
+            false
+        };
 
         let snapshot = match policy.snapshot(&vpn_policy_teardown_target()).await {
             Ok(snapshot) => snapshot,

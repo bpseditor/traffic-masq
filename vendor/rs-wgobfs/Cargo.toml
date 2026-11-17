@@ -1,0 +1,38 @@
+[package]
+name = "rs-wgobfs"
+version = "0.6.2"
+edition = "2021"
+
+authors = ["Wei Chen <weichen302@gmail.com", "The Rand Project Developers", "The Rust Project Developers", "The CryptoCorrosion Contributors"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/infinet/rs-wgobfs"
+description = """
+WireGuard obfuscation command line, work with xt_wgobfs Linux kernel module
+"""
+keywords = ["wireguard", "obfuscation"]
+
+
+[dependencies]
+bytes = "1.5.0"
+pico-args = "0.5.0"
+tokio = { version = "1", features = ["full"] }
+rand_core = { version = "0.9.0" }
+ppv-lite86 = { version = "0.2.14", default-features = false, features = ["simd"] }
+serde = { version = "1.0", features = ["derive"], optional = true }
+socket2 = "0.6.1"
+
+
+[features]
+default = ["std"]
+std = ["ppv-lite86/std"]
+serde = ["dep:serde"]
+
+
+# build smaller release binary
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1334,6 +1334,18 @@ impl traffic_masq::vpn::VpnProvider for FakeVpnProvider {
         }))
     }
 
+    async fn latest_handshake(
+        &self,
+        _name: &str,
+    ) -> Result<Option<u64>, traffic_masq::vpn::ProviderError> {
+        Ok(Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        ))
+    }
+
     async fn is_up(&self, name: &str) -> Result<bool, traffic_masq::vpn::ProviderError> {
         Ok(self
             .links

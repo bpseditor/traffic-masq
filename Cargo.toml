@@ -1,5 +1,6 @@
 
 [workspace]
+exclude = ["vendor/rs-wgobfs"]
 members = ["crates/netlink", "crates/protocol", "crates/api-client", "crates/atomic-file", "crates/tui", "crates/dataplane", "crates/dhcp-core", "crates/wireguard", "crates/host-observation"]
 default-members = [".", "crates/tui"]
 resolver = "2"

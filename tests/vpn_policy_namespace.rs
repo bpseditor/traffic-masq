@@ -678,8 +678,22 @@ async fn run_scenario(fixture: &mut VpnPolicyNamespaceFixture) -> Result<()> {
             bail!("protected tunnel disconnect must require confirmed Direct policy: {other:?}")
         }
     }
-    // Inject an external link outage without changing committed VPN intent.
-    // The policy must continue blocking physical-uplink fallback.
+    // Keep the peer unavailable: the daemon can repair an administratively
+    // down local link immediately, so local "down" alone is not a stable outage.
+    run(
+        "ip",
+        &[
+            "netns",
+            "exec",
+            &fixture.upstream_ns,
+            "ip",
+            "link",
+            "set",
+            "dev",
+            &fixture.peer_wg_if,
+            "down",
+        ],
+    )?;
     run("ip", &["link", "set", "dev", "tm-wg0", "down"])?;
 
     timeout(
@@ -710,6 +724,18 @@ async fn run_scenario(fixture: &mut VpnPolicyNamespaceFixture) -> Result<()> {
     .await
     .context("direct uplink leaked traffic while the VPN tunnel was down")??;
 
+    // If recovery raises the local link, its previous handshake can remain
+    // fresh for 180 seconds. Allow that window before requiring unhealthy.
+    timeout(Duration::from_secs(190), async {
+        loop {
+            if !fetch_vpn_policy_status(&client).await?.tunnel_healthy {
+                return Ok::<(), anyhow::Error>(());
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .context("VPN health did not expire during peer outage")??;
     let status_during_outage = fetch_vpn_policy_status(&client).await?;
     if status_during_outage.tunnel_healthy {
         bail!("VPN policy status reports tunnel_healthy=true during the external link outage");
@@ -719,6 +745,20 @@ async fn run_scenario(fixture: &mut VpnPolicyNamespaceFixture) -> Result<()> {
     }
     assert_management_path_reachable(&client).await?;
 
+    run(
+        "ip",
+        &[
+            "netns",
+            "exec",
+            &fixture.upstream_ns,
+            "ip",
+            "link",
+            "set",
+            "dev",
+            &fixture.peer_wg_if,
+            "up",
+        ],
+    )?;
     run("ip", &["link", "set", "dev", "tm-wg0", "up"])?;
     timeout(WAIT_TIMEOUT, wait_for_handshake())
         .await

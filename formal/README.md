@@ -119,3 +119,8 @@ restored link and rebinds owned route ifindices, and unsupported adapters reject
 nonempty standalone intent. These OS/ownership properties remain Rust test
 obligations under the model's existing restoration-success assumption. Router
 preview revision/fingerprint checks precede the abstract registration boundary.
+
+VPN handshake readiness remains within `applying`; only a successful readiness
+check permits `awaitingCommit`. Autoconnect refresh uses the same registration,
+compensation and confirmation boundaries as standalone VPN activation. It adds
+no abstract transition and cannot bypass an existing pending transaction.

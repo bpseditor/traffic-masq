@@ -608,6 +608,11 @@ pub trait RouterSubsystems: Send + Sync {
         }
         Ok(())
     }
+
+    /// Check live VPN connectivity during apply, independently of dataplane drift.
+    async fn vpn_handshake_ready(&self, _desired: &RouterDesired) -> Result<bool> {
+        Ok(true)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -931,6 +936,16 @@ impl RouterManager {
             self.subsystems.health_output_wifi(&plan.desired)
         );
         check_health!("vpn_chain", self.subsystems.health_vpn_chain(&plan.desired));
+        check_health!("VPN handshake", async {
+            tokio::time::timeout(std::time::Duration::from_secs(45), async {
+                while !self.subsystems.vpn_handshake_ready(&plan.desired).await? {
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+                Ok::<(), anyhow::Error>(())
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("VPN tunnel has no recent handshake"))?
+        });
         check_health!("dhcp", self.subsystems.health_dhcp(&plan.desired));
         check_health!("routes", self.subsystems.health_routes(&plan.desired));
         check_health!("dataplane", self.subsystems.health_dataplane(&plan.desired));

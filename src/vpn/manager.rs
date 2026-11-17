@@ -207,6 +207,12 @@ impl<D: VpnDriver> VpnManager<D> {
         }))
     }
 
+    pub async fn is_healthy(&self, interface: &str) -> Result<bool, ManagerError> {
+        let record = self.active_on(interface).ok_or(ManagerError::NotActive)?;
+        self.assert_still_owned(&record).await?;
+        Ok(self.driver.is_healthy(interface).await?)
+    }
+
     /// Validate activation on the default owned VPN interface without creating a link.
     pub async fn plan_activation(&self, name: &str) -> Result<D::Profile, ManagerError> {
         self.plan_activation_on(OWNED_INTERFACE_NAME, name).await
@@ -752,6 +758,16 @@ impl<D: VpnDriver> VpnManager<D> {
 }
 
 impl VpnManager<crate::vpn::wireguard::WireGuardVpnDriver> {
+    pub async fn refresh_connection(&self, interface: &str) -> Result<(), ManagerError> {
+        let _guard = self.activation_lock.lock().await;
+        let record = self.active_on(interface).ok_or(ManagerError::NotActive)?;
+        self.assert_still_owned(&record).await?;
+        Ok(self
+            .driver
+            .refresh_connection(interface, &record.profile_name)
+            .await?)
+    }
+
     pub async fn enable_keepalive(&self, interface: &str) -> Result<(), ManagerError> {
         let record = self.active_on(interface).ok_or(ManagerError::NotActive)?;
         self.assert_still_owned(&record).await?;

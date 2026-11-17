@@ -52,6 +52,12 @@ pub struct WgObfsClient {
 
 impl WgObfsClient {
     pub async fn start(config: &WgObfsConfig) -> io::Result<Self> {
+        Self::start_marked(config, None).await
+    }
+
+    /// Mark only the outer transport socket, before connect and before the
+    /// forwarding task starts. Loopback packets to WireGuard remain unmarked.
+    pub async fn start_marked(config: &WgObfsConfig, mark: Option<u32>) -> io::Result<Self> {
         let local = UdpSocket::bind("127.0.0.1:0").await?;
         let remote = UdpSocket::bind(if config.forward.is_ipv4() {
             "0.0.0.0:0"
@@ -59,6 +65,9 @@ impl WgObfsClient {
             "[::]:0"
         })
         .await?;
+        if let Some(mark) = mark {
+            socket2::SockRef::from(&remote).set_mark(mark)?;
+        }
         remote.connect(config.forward).await?;
         let address = local.local_addr()?;
         let key = config.key.clone();

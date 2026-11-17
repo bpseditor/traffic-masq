@@ -13,6 +13,7 @@ pub struct WireGuardVpnDriver {
     store: crate::vpn::store::WireGuardProfileStore,
     provider: std::sync::Arc<dyn VpnProvider>,
     transports: Mutex<BTreeMap<String, WgObfsClient>>,
+    transport_mark: Option<u32>,
 }
 
 impl WireGuardVpnDriver {
@@ -25,7 +26,47 @@ impl WireGuardVpnDriver {
             store,
             provider,
             transports: Mutex::new(BTreeMap::new()),
+            transport_mark: None,
         }
+    }
+
+    /// The caller must install fail-closed transport routing before activating
+    /// or recovering a driver configured with this mark.
+    pub fn with_transport_mark(mut self, mark: u32) -> Self {
+        self.transport_mark = Some(mark);
+        self
+    }
+
+    async fn configure_transport_mark(&self, interface: &str) -> Result<(), VpnDriverError> {
+        if let Some(mark) = self.transport_mark {
+            self.provider.set_fwmark(interface, mark).await?;
+        }
+        Ok(())
+    }
+
+    /// Re-resolve the endpoint and restart userspace transport without removing
+    /// the owned link or the fail-closed routing policy.
+    pub async fn refresh_connection(
+        &self,
+        interface: &str,
+        profile_name: &str,
+    ) -> Result<(), VpnDriverError> {
+        self.configure_transport_mark(interface).await?;
+        let profile = self.read_profile(profile_name)?;
+        let (peers, transport) = self.prepare_peers(&profile).await?;
+        self.provider.set_peers(interface, &peers).await?;
+        {
+            let mut transports = self.transports.lock().expect("transport mutex poisoned");
+            if let Some(client) = transport {
+                transports.insert(interface.into(), client);
+            } else {
+                // A profile can be replaced with a plain WireGuard profile.
+                // Drop the previous proxy only after peers were updated successfully.
+                transports.remove(interface);
+            }
+        }
+        self.provider.set_link_up(interface).await?;
+        Ok(())
     }
 
     pub async fn enable_keepalive(&self, interface: &str) -> Result<(), VpnDriverError> {
@@ -40,13 +81,22 @@ impl WireGuardVpnDriver {
         profile: &WireGuardProfile,
     ) -> Result<(Vec<WireGuardPeerConfig>, Option<WgObfsClient>), VpnDriverError> {
         let mut peers = profile.peers.clone();
+        // Managed client tunnels need periodic traffic for handshake health checks.
+        for peer in &mut peers {
+            peer.persistent_keepalive = Some(
+                peer.persistent_keepalive
+                    .filter(|seconds| *seconds > 0)
+                    .unwrap_or(25)
+                    .min(25),
+            );
+        }
         let transport = if let Some(config) = &profile.wgobfs {
             if peers.len() != 1 {
                 return Err(VpnDriverError::Transport(
                     "rs-wgobfs forwarding requires exactly one WireGuard peer".into(),
                 ));
             }
-            let client = WgObfsClient::start(config)
+            let client = WgObfsClient::start_marked(config, self.transport_mark)
                 .await
                 .map_err(|error| VpnDriverError::Transport(error.to_string()))?;
             peers[0].endpoint = Some(WireGuardEndpoint::Address(client.local_addr()));
@@ -135,6 +185,25 @@ impl VpnDriver for WireGuardVpnDriver {
                 .is_none_or(WgObfsClient::is_running))
     }
 
+    async fn is_healthy(&self, interface: &str) -> Result<bool, VpnDriverError> {
+        if !self.is_up(interface).await? {
+            return Ok(false);
+        }
+        if let Some(mark) = self.transport_mark {
+            if self.provider.fwmark(interface).await? != Some(mark) {
+                return Ok(false);
+            }
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| VpnDriverError::Transport(error.to_string()))?
+            .as_secs();
+        Ok(self
+            .latest_handshake(interface)
+            .await?
+            .is_some_and(|at| at <= now && now - at <= 180))
+    }
+
     async fn read_ownership_proof(
         &self,
         interface: &str,
@@ -174,6 +243,7 @@ impl VpnDriver for WireGuardVpnDriver {
             .await?;
 
         let activation = async {
+            self.configure_transport_mark(interface).await?;
             if let Some(mtu) = profile.interface.mtu {
                 self.provider.set_mtu(interface, mtu).await?;
             }
@@ -239,6 +309,7 @@ impl VpnDriver for WireGuardVpnDriver {
         interface: &str,
         profile_name: &str,
     ) -> Result<(), VpnDriverError> {
+        self.configure_transport_mark(interface).await?;
         if self
             .transports
             .lock()

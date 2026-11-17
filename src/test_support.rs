@@ -547,11 +547,29 @@ struct FakeVpnLink {
 }
 
 /// In-memory WireGuard provider for tests that need ownership-proof semantics.
-#[derive(Default)]
 pub(crate) struct FakeVpnProvider {
     pub(crate) handshake: Option<u64>,
+    pub(crate) handshake_available: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) peer_updates: std::sync::atomic::AtomicUsize,
     pub(crate) mtus: StdMutex<HashMap<String, u32>>,
     links: StdMutex<HashMap<String, FakeVpnLink>>,
+}
+
+impl Default for FakeVpnProvider {
+    fn default() -> Self {
+        Self {
+            handshake: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            ),
+            handshake_available: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            peer_updates: Default::default(),
+            mtus: Default::default(),
+            links: Default::default(),
+        }
+    }
 }
 
 impl FakeVpnProvider {
@@ -660,7 +678,10 @@ impl VpnProvider for FakeVpnProvider {
         name: &str,
         _peers: &[WireGuardPeerConfig],
     ) -> Result<(), ProviderError> {
-        self.require_link(name)
+        self.require_link(name)?;
+        self.peer_updates
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     }
 
     async fn set_link_up(&self, name: &str) -> Result<(), ProviderError> {
@@ -701,7 +722,10 @@ impl VpnProvider for FakeVpnProvider {
 
     async fn latest_handshake(&self, name: &str) -> Result<Option<u64>, ProviderError> {
         self.require_link(name)?;
-        Ok(self.handshake)
+        Ok(self.handshake.filter(|_| {
+            self.handshake_available
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }))
     }
 
     async fn enable_keepalive(&self, name: &str) -> Result<(), ProviderError> {
@@ -840,6 +864,16 @@ impl VpnProvider for StaticKeyVpnProvider {
             .unwrap()
             .contains_key(name)
             .then(|| self.public_key.clone()))
+    }
+
+    async fn latest_handshake(&self, name: &str) -> Result<Option<u64>, ProviderError> {
+        self.require_link(name)?;
+        Ok(Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        ))
     }
 
     async fn is_up(&self, name: &str) -> Result<bool, ProviderError> {

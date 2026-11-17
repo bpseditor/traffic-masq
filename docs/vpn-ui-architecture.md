@@ -31,9 +31,9 @@ per-hop managers keep distinct durable ownership records. The same profile
 library supplies both paths. A profile is configuration, not a unique runtime
 connection. Standalone status is not an inventory of chain interfaces.
 
-There is one ordered global chain, with at most eight hops. The first hop is
-closest to the physical uplink. Relay hops route subsequent tunnels through
-preceding hops; the exit hop applies protected-subnet policy and the kill switch.
+The global chain currently admits one hop, connected to the physical uplink.
+That exit hop applies protected-subnet policy and the kill switch. Multi-hop
+plans are rejected until nested transport routing is fully integrated.
 The chain editor preserves explicit forwarding rules. Uplink and chain configuration
 do not add forwarding or NAT permissions; configure those in Internet sharing.
 For chain traffic, each sharing rule owns its NAT choice: No NAT preserves the

@@ -700,3 +700,50 @@ async fn hostname_profile_activation_applies_mtu_and_remains_cancellable() {
     manager.deactivate().await.unwrap();
     assert!(!fake.link_exists(OWNED_INTERFACE_NAME).await.unwrap());
 }
+
+#[tokio::test]
+async fn reconnect_reapplies_peers_without_replacing_owned_interface() {
+    let (manager, fake, _dir) = manager_with_store();
+    manager
+        .import_profile("retry.conf", valid_config(VALID_PRIVATE_KEY).as_bytes())
+        .unwrap();
+    manager.activate("retry.conf").await.unwrap();
+    let marker = fake.launch_marker_for(OWNED_INTERFACE_NAME);
+    let proof = fake.public_key(OWNED_INTERFACE_NAME).await.unwrap();
+    fake.set_link_down(OWNED_INTERFACE_NAME).await.unwrap();
+    manager
+        .refresh_connection(OWNED_INTERFACE_NAME)
+        .await
+        .unwrap();
+    assert_eq!(
+        fake.peer_updates.load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
+    assert_eq!(fake.launch_marker_for(OWNED_INTERFACE_NAME), marker);
+    assert_eq!(fake.public_key(OWNED_INTERFACE_NAME).await.unwrap(), proof);
+    assert!(fake.is_up(OWNED_INTERFACE_NAME).await.unwrap());
+}
+
+#[tokio::test]
+async fn administrative_up_does_not_prove_connectivity() {
+    for handshake in [None, Some(1), Some(u64::MAX)] {
+        let directory = tempdir().unwrap();
+        let mut fake = FakeVpnProvider::default();
+        fake.handshake = handshake;
+        let provider = std::sync::Arc::new(fake);
+        let driver = WireGuardVpnDriver::new(
+            provider,
+            WireGuardProfileStore::new(directory.path().join("profiles")),
+        );
+        let manager = VpnManager::new(
+            driver,
+            ActiveProfileStore::new(directory.path().join("active.json")),
+        );
+        manager
+            .import_profile("offline.conf", valid_config(VALID_PRIVATE_KEY).as_bytes())
+            .unwrap();
+        manager.activate("offline.conf").await.unwrap();
+        assert!(manager.status().await.unwrap().unwrap().up);
+        assert!(!manager.is_healthy(OWNED_INTERFACE_NAME).await.unwrap());
+    }
+}

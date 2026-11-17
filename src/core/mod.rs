@@ -23,6 +23,8 @@ pub mod transaction;
 pub mod vpn_chain;
 pub mod vpn_policy;
 pub mod vpn_policy_manager;
+pub mod vpn_transport;
+pub mod vpn_transport_guard;
 
 pub(crate) mod client_compensation;
 pub(crate) mod provisioning_apply;

@@ -3060,6 +3060,7 @@ dependencies = [
  "netlink-packet-route",
  "netlink-packet-wireguard",
  "rtnetlink",
+ "socket2",
  "thiserror 1.0.69",
  "tokio",
  "zeroize",

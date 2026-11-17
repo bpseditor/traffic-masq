@@ -730,6 +730,14 @@ impl VpnChainRuntime {
             }
         } else if desired.profile.is_some() {
             tunnel.reconcile().await?;
+            if !tunnel
+                .is_healthy(crate::vpn::manager::OWNED_INTERFACE_NAME)
+                .await?
+            {
+                tunnel
+                    .refresh_connection(crate::vpn::manager::OWNED_INTERFACE_NAME)
+                    .await?;
+            }
         }
         if let Some(desired) = &desired.policy {
             policy.activate(desired).await?;
@@ -789,6 +797,10 @@ impl VpnChainRuntime {
     }
 
     pub(super) async fn plan_vpn_chain(&self, desired: &RouterDesired) -> Result<VpnChainPlan> {
+        anyhow::ensure!(
+            desired.vpn_chain.len() <= 1,
+            "multi-hop VPN is unavailable: transport routing is not yet fail-closed"
+        );
         if !desired.vpn_chain.is_empty() && self.deps.is_none() {
             bail!("VPN chain runtime is unavailable");
         }
@@ -817,6 +829,10 @@ impl VpnChainRuntime {
     /// compensation failure is returned to the outer transaction instead of
     /// being hidden.
     pub(super) async fn apply_vpn_chain(&self, plan: &VpnChainPlan) -> Result<()> {
+        anyhow::ensure!(
+            plan.hops.len() <= 1,
+            "multi-hop VPN is unavailable: transport routing is not yet fail-closed"
+        );
         if let Some(desired) = &plan.standalone {
             self.apply_standalone(desired).await?;
         }
@@ -940,6 +956,10 @@ impl VpnChainRuntime {
     }
 
     pub(super) async fn health_vpn_chain(&self, desired: &RouterDesired) -> Result<()> {
+        anyhow::ensure!(
+            desired.vpn_chain.len() <= 1,
+            "multi-hop VPN is unavailable: transport routing is not yet fail-closed"
+        );
         if let Some(desired) = &desired.standalone_vpn {
             let (tunnel, policy) = self.standalone_runtime()?;
             let current = tunnel.status().await?;
@@ -996,5 +1016,28 @@ impl VpnChainRuntime {
             }
         }
         Ok(())
+    }
+
+    pub(super) async fn vpn_handshake_ready(&self, desired: &RouterDesired) -> Result<bool> {
+        if desired
+            .standalone_vpn
+            .as_ref()
+            .is_some_and(|vpn| vpn.profile.is_some())
+        {
+            let (tunnel, _) = self.standalone_runtime()?;
+            if !tunnel
+                .is_healthy(crate::vpn::manager::OWNED_INTERFACE_NAME)
+                .await?
+            {
+                return Ok(false);
+            }
+        }
+        for hop in &desired.vpn_chain {
+            let tunnel = self.vpn_manager_for_hop(hop.hop_index).await?;
+            if !tunnel.is_healthy(&hop.interface).await? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }

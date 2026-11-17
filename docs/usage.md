@@ -88,6 +88,10 @@ sh packaging/test-namespaces.sh
 sh packaging/test-namespaces.sh vpn_wireguard_namespace vpn_policy_namespace
 ```
 
+The namespace test runner builds the bundled `vendor/rs-wgobfs` reference from
+source for the WireGuard tests. No preinstalled rs-wgobfs binary is needed.
+`RS_WGOBFS_BINARY` can optionally select another reference executable.
+
 You need Linux, iproute2, nftables, iputils-ping, wireguard-tools, ethtool, `udhcpc`,
 Python 3, util-linux and coreutils. Cargo builds as your user. Each suite then
 runs in its own network, mount and PID namespaces, with private `/run`, `/proc`
@@ -483,10 +487,9 @@ interface name and choose External (unmanaged Input) or DHCP (managed Input with
 an enabled DHCP client). Those interface prerequisites are configured in
 Interfaces/DHCP Client; this editor preserves their settings.
 
-Select imported VPN profiles, add them at the LAN end, select a hop and move it
-closer to the physical uplink or LAN, or remove it. The first hop connects through
-the physical uplink; each later hop connects through the preceding tunnel. The
-last hop protects LAN traffic. The daemon validates chain size and profiles.
+Select an imported VPN profile for the single supported hop, or remove it.
+The hop connects through the physical uplink and protects LAN traffic. The
+daemon rejects multi-hop plans until nested transport routing is fully integrated.
 
 Uplink and chain edits preserve explicit sharing rules. Configure permitted
 connections in Internet sharing, including the VPN egress. An uplink or chain
@@ -1122,3 +1125,21 @@ paths. Credential updates report only `keep`, `set`, or `clear`, never their val
 
 For packet metadata and background stages, enable module-specific DEBUG filters,
 for example `RUST_LOG=traffic_masq::dhcp::client=debug,traffic_masq::app::reconcile=debug,traffic_masq::logging::operation=debug`.
+
+VPN health requires a handshake within the last 180 seconds; initial connection
+gets up to 45 seconds for handshake retries. Managed peers use keepalives so
+idle tunnels remain observable. Reconnection refreshes endpoints and the
+userspace obfuscation transport under the router coordinator, preserving the
+protected interface on successful refresh. Failed refresh uses the existing
+snapshot and rollback path.
+
+Only one VPN hop is currently admitted. Multi-hop configurations are rejected:
+the previous relay route rules did not enforce nested tunnel transport.
+
+Protected IPv4 clients must query an external DNS resolver through the VPN.
+DNS/DoT/DoQ requests to the router itself (TCP/UDP ports 53 and 853) are blocked
+while VPN policy is active, preventing a local resolver from forwarding those
+requests over an unprotected host uplink. Profile DNS settings are not applied.
+IPv6 forwarding is blocked while VPN policy is active because its routing
+policy currently protects IPv4 only. Incoming IPv6 DNS proxy requests are also
+blocked, so switching address families cannot bypass the DNS protection.

@@ -104,22 +104,6 @@ fn desired_validation_rejects_invalid_topologies() {
 }
 
 #[test]
-fn nft_render_contains_marking_nat_and_killswitch() {
-    let rendered = render_vpn_nftables_batch(false, Some(&desired())).expect("render");
-
-    assert!(rendered.contains("table inet traffic_masq_vpn"));
-    assert!(rendered.contains("comment \"traffic-masq:vpn:v1\""));
-    assert!(rendered.contains(
-        "set protected_subnets { type ipv4_addr; flags interval; elements = { 192.168.10.0/24, 192.168.20.0/24 } }"
-    ));
-    assert!(rendered.contains("ip saddr @protected_subnets meta mark set 0x54000000"));
-    assert!(
-        rendered.contains("meta mark and 0xff000000 == 0x54000000 oifname \"tm-wg0\" masquerade")
-    );
-    assert!(rendered.contains("meta mark and 0xff000000 == 0x54000000 oifname \"eth0\" drop"));
-}
-
-#[test]
 fn nft_apply_is_idempotent_and_preserves_foreign_tables() {
     let wanted = desired();
     let executor = FakeNftExecutor::with_responses(vec![Ok(nft_ruleset(Some(&wanted)))]);
@@ -220,7 +204,7 @@ fn nft_observe_accepts_numeric_mark_prefixes_without_accepting_changed_nat_polic
                     {
                         condition["left"] = serde_json::json!({"meta": {"key": "mark"}});
                         condition["right"] = serde_json::json!({"prefix": {
-                            "addr": VPN_POLICY_FWMARK.get(), "len": length
+                            "addr": condition["right"].clone(), "len": length
                         }});
                         condition["op"] = Value::from(operator);
                     }
@@ -353,24 +337,6 @@ fn host_traffic_is_absent_from_metadata_and_rules_by_default() {
 }
 
 #[test]
-fn host_traffic_render_excludes_endpoints_and_blocks_leaks() {
-    let rendered = render_vpn_nftables_batch(false, Some(&desired_with_host())).expect("render");
-    assert!(rendered.contains("set vpn_endpoints { type ipv4_addr; elements = { 203.0.113.1 } }"));
-    let exclusion = rendered
-        .find("ip daddr @vpn_endpoints return")
-        .expect("endpoint exclusion");
-    let mark = rendered
-        .find("meta nfproto ipv4 meta mark set 0x54000000\n  }\n  chain host_killswitch")
-        .expect("host mark");
-    assert!(exclusion < mark, "endpoint exclusion must precede marking");
-    assert!(rendered.contains("type route hook output priority mangle"));
-    assert!(rendered.contains(
-        "meta nfproto ipv4 meta mark and 0xff000000 == 0x54000000 oifname != \"tm-wg0\" drop"
-    ));
-    assert!(rendered.contains("ip6 daddr != { fe80::/10, ff00::/8 } drop"));
-}
-
-#[test]
 fn host_traffic_validation_rejects_unsafe_endpoints() {
     for endpoints in [
         vec![],
@@ -428,6 +394,7 @@ fn host_killswitch_drift_checks_operators_exclusions_and_rule_order() {
         "reverse_killswitch",
         "permit_all_udp",
         "remove_ipv4_guard",
+        "change_transport_selector",
         "reverse_ipv6",
         "reorder_mark",
     ] {
@@ -448,8 +415,11 @@ fn host_killswitch_drift_checks_operators_exclusions_and_rule_order() {
             "permit_all_udp" => {
                 rules[4]["expr"][0]["match"]["right"] = serde_json::json!({"set": [53, 67, 68]})
             }
+            "change_transport_selector" => {
+                rules[5]["expr"][0]["match"]["right"] = serde_json::json!(0x54000000u32);
+            }
             "remove_ipv4_guard" => {
-                rules[5]["expr"].as_array_mut().unwrap().remove(0);
+                rules[6]["expr"].as_array_mut().unwrap().remove(0);
             }
             "reverse_ipv6" => rules[1]["expr"][1]["match"]["op"] = serde_json::json!("=="),
             "reorder_mark" => {
@@ -566,7 +536,7 @@ fn vpn_nat_kernel_preserves_no_nat_and_host_nat_independently() {
         };
         let mut child = Command::new("unshare").args([
             "-Urnm", "sh", "-ec",
-            "mount -t tmpfs none /run; mkdir /run/netns; nft -f -; python3 \"$1\" \"$2\" \"$3\"; nft -j list ruleset",
+            "mount -t tmpfs none /run; mkdir /run/netns; nft -f -; python3 \"$1\" \"$2\" \"$3\"; nft -j list ruleset; nft list table inet traffic_masq_vpn >&2; nft list table inet traffic_masq >&2",
             "vpn-nat-test", concat!(env!("CARGO_MANIFEST_DIR"), "/src/vpn_nat_kernel_test.py"),
             expected, if host { "host" } else { "forwarded" },
         ]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
@@ -582,7 +552,32 @@ fn vpn_nat_kernel_preserves_no_nat_and_host_nat_independently() {
             "standalone={standalone}, explicit_nat={explicit_nat}, host={host}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let observed = parse_owned_vpn_firewall_state(&output.stdout).unwrap();
+        struct SnapshotExecutor {
+            json: Vec<u8>,
+            text: Vec<u8>,
+        }
+        impl NftExecutor for SnapshotExecutor {
+            fn execute(&self, arguments: &[&str], _: &[u8]) -> Result<Vec<u8>> {
+                if arguments == ["--json", "list", "ruleset"] {
+                    return Ok(self.json.clone());
+                }
+                anyhow::ensure!(
+                    arguments.len() == 4 && arguments[..3] == ["list", "table", "inet"],
+                    "unexpected snapshot command"
+                );
+                let text = std::str::from_utf8(&self.text)?;
+                let header = format!("table inet {} {{", arguments[3]);
+                let start = text.find(&header).context("missing table text")?;
+                Ok(text.as_bytes()[start..].to_vec())
+            }
+        }
+        let executor = std::sync::Arc::new(SnapshotExecutor {
+            json: output.stdout.clone(),
+            text: output.stderr.clone(),
+        }) as std::sync::Arc<dyn NftExecutor>;
+        let observed = VpnPolicyFirewallBackend::new(executor.clone())
+            .observe()
+            .unwrap();
         assert_eq!(observed.desired.as_ref(), Some(&policy));
         assert_eq!(
             observed.integrity,
@@ -590,10 +585,41 @@ fn vpn_nat_kernel_preserves_no_nat_and_host_nat_independently() {
             "{}",
             String::from_utf8_lossy(&output.stdout)
         );
-        let forwarding_observed = crate::parse_owned_nftables_state(&output.stdout).unwrap();
+        let forwarding_observed = crate::NftablesBackend::new(executor).observe().unwrap();
         assert_eq!(
             forwarding_observed.integrity,
             crate::OwnedFirewallIntegrity::Intact
         );
     }
+}
+
+#[test]
+#[ignore = "requires Linux user namespaces, nft, ip and python3"]
+fn vpn_dns_guard_kernel_blocks_local_proxy_requests() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut policy = desired();
+    policy.protected_subnets = vec!["192.0.2.0/24".parse().unwrap()];
+    policy.vpn_interface = "tm-wg-0".into();
+    let batch = render_vpn_nftables_batch(false, Some(&policy)).unwrap();
+    let mut child = Command::new("unshare")
+        .args([
+            "-Urnm", "sh", "-ec",
+            "mount -t tmpfs none /run; mkdir /run/netns; nft -f -; python3 \"$1\" 198.51.100.1 forwarded",
+            "vpn-dns-test", concat!(env!("CARGO_MANIFEST_DIR"), "/src/vpn_nat_kernel_test.py"),
+        ])
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(batch.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

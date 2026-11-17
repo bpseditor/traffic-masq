@@ -23,6 +23,29 @@ for suite do
     esac
     printf '%s\n' "$suite" >> "$stage/suites"
 done
+# Keep the reference implementation independent of the native client. Build it
+# without privilege and obtain its actual path from Cargo (also with target overrides).
+reference_binary=${RS_WGOBFS_BINARY:-}
+if grep -qx vpn_wireguard_namespace "$stage/suites" && [ -z "$reference_binary" ]; then
+    cargo build --locked --manifest-path vendor/rs-wgobfs/Cargo.toml \
+        --bin rs-wgobfs --message-format=json > "$stage/reference.jsonl"
+    reference_binary=$(python3 - "$stage/reference.jsonl" <<'PYREF'
+import json
+import pathlib
+import sys
+
+artifacts = [json.loads(line) for line in pathlib.Path(sys.argv[1]).read_text().splitlines()]
+print(next(item["executable"] for item in artifacts
+           if item.get("reason") == "compiler-artifact"
+           and item.get("target", {}).get("name") == "rs-wgobfs"
+           and item.get("executable")))
+PYREF
+    )
+fi
+if [ -n "$reference_binary" ]; then
+    reference_binary=$(realpath "$reference_binary")
+    test -x "$reference_binary"
+fi
 set --
 while IFS= read -r suite; do
     set -- "$@" --test "$suite"
@@ -70,11 +93,12 @@ while IFS="$(printf '\t')" read -r suite executable count; do
     timeout --signal=TERM --kill-after=10s 10m "$@" sh -eu -c '
         test "$(readlink /proc/self/ns/net)" != "$1"
         export TRAFFIC_MASQ_TEST_HOST_NETNS="$1"
-        shift
+        export RS_WGOBFS_BINARY="$2"
+        shift 2
         mount --make-rprivate /
         mount -t tmpfs -o mode=755 tmpfs /run
         mount -t sysfs sysfs /sys
         ip link set lo up
         exec "$@"
-    ' namespace-test "$host_netns" "$executable" --ignored --test-threads=1 --nocapture
+    ' namespace-test "$host_netns" "$reference_binary" "$executable" --ignored --test-threads=1 --nocapture
 done < "$stage/executables"

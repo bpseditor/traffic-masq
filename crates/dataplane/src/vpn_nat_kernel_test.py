@@ -56,3 +56,45 @@ try:
 finally:
     proc.terminate()
     proc.wait()
+
+# A resolver on the router must not turn protected clients' DNS requests into
+# unmarked host traffic. Exercise UDP DNS/DoQ and TCP DNS/DoT against listeners
+# that really exist, so a closed port cannot masquerade as firewall protection.
+import socket
+
+for port in (53, 853):
+    for kind in (socket.SOCK_DGRAM, socket.SOCK_STREAM):
+        listener = socket.socket(socket.AF_INET, kind)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("192.0.2.1", port))
+        listener.settimeout(0.2)
+        if kind == socket.SOCK_STREAM:
+            listener.listen(1)
+        client = r'''
+import socket, sys
+kind, port = int(sys.argv[1]), int(sys.argv[2])
+sock = socket.socket(socket.AF_INET, kind)
+sock.settimeout(0.2)
+if kind == socket.SOCK_DGRAM:
+    sock.sendto(b'dns-leak-probe', ('192.0.2.1', port))
+else:
+    try:
+        sock.connect(('192.0.2.1', port))
+    except TimeoutError:
+        pass
+    else:
+        raise AssertionError('local DNS proxy reachable outside VPN')
+'''
+        try:
+            run("ip", "netns", "exec", "client", "python3", "-c", client, str(kind), str(port))
+            try:
+                if kind == socket.SOCK_DGRAM:
+                    listener.recvfrom(128)
+                else:
+                    listener.accept()
+            except TimeoutError:
+                pass
+            else:
+                raise AssertionError(f"DNS leak to local resolver: {kind}, {port}")
+        finally:
+            listener.close()

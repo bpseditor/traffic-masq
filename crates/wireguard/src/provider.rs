@@ -86,6 +86,21 @@ pub trait VpnProvider: Send + Sync {
         peers: &[WireGuardPeerConfig],
     ) -> Result<(), ProviderError>;
 
+    /// Set the mark on encrypted UDP before installing peers or bringing the
+    /// link up. Callers must install transport routing and its guard first.
+    async fn set_fwmark(&self, name: &str, mark: u32) -> Result<(), ProviderError> {
+        Err(ProviderError::Netlink(format!(
+            "transport fwmark {mark:#x} configuration unavailable for {name}"
+        )))
+    }
+
+    /// Observe the encrypted transport's mark for drift detection.
+    async fn fwmark(&self, name: &str) -> Result<Option<u32>, ProviderError> {
+        Err(ProviderError::Netlink(format!(
+            "transport fwmark observation unavailable for {name}"
+        )))
+    }
+
     /// Set administrative up on an owned link; does not prove tunnel health.
     async fn set_link_up(&self, name: &str) -> Result<(), ProviderError>;
 
@@ -163,6 +178,14 @@ impl VpnProvider for Arc<dyn VpnProvider> {
         peers: &[WireGuardPeerConfig],
     ) -> Result<(), ProviderError> {
         (**self).set_peers(name, peers).await
+    }
+
+    async fn set_fwmark(&self, name: &str, mark: u32) -> Result<(), ProviderError> {
+        (**self).set_fwmark(name, mark).await
+    }
+
+    async fn fwmark(&self, name: &str) -> Result<Option<u32>, ProviderError> {
+        (**self).fwmark(name).await
     }
 
     async fn set_link_up(&self, name: &str) -> Result<(), ProviderError> {
@@ -275,6 +298,14 @@ impl VpnProvider for LazyNetlinkVpnProvider {
         peers: &[WireGuardPeerConfig],
     ) -> Result<(), ProviderError> {
         self.provider().await?.set_peers(name, peers).await
+    }
+
+    async fn set_fwmark(&self, name: &str, mark: u32) -> Result<(), ProviderError> {
+        self.provider().await?.set_fwmark(name, mark).await
+    }
+
+    async fn fwmark(&self, name: &str) -> Result<Option<u32>, ProviderError> {
+        self.provider().await?.fwmark(name).await
     }
 
     async fn set_link_up(&self, name: &str) -> Result<(), ProviderError> {
@@ -541,6 +572,26 @@ impl VpnProvider for NetlinkVpnProvider {
             WireguardAttribute::Peers(wg_peers),
         ])
         .await
+    }
+
+    async fn set_fwmark(&self, name: &str, mark: u32) -> Result<(), ProviderError> {
+        self.set_device(vec![
+            WireguardAttribute::IfName(name.into()),
+            WireguardAttribute::Fwmark(mark),
+        ])
+        .await
+    }
+
+    async fn fwmark(&self, name: &str) -> Result<Option<u32>, ProviderError> {
+        let attributes = self.get_device(name).await.ok_or_else(|| {
+            ProviderError::Netlink(format!("failed to observe transport fwmark on {name}"))
+        })?;
+        Ok(attributes
+            .into_iter()
+            .find_map(|attribute| match attribute {
+                WireguardAttribute::Fwmark(mark) => Some(mark),
+                _ => None,
+            }))
     }
 
     async fn set_link_up(&self, name: &str) -> Result<(), ProviderError> {

@@ -293,6 +293,7 @@ where
             .executor
             .execute(&["--json", "list", "ruleset"], &[])
             .context("failed to observe nftables ruleset")?;
+        let output = recover_table_comment(&self.executor, &output, NFT_TABLE, NFT_TABLE_COMMENT)?;
         parse_owned_nftables_state(&output)
     }
 
@@ -1191,3 +1192,43 @@ fn validate_active_interface(
 
 #[cfg(test)]
 mod tests;
+
+// Older nft releases omit table comments from JSON. Require the exact
+// table-level text comment; nested rule comments never establish ownership.
+fn verify_text_table_comment(output: &[u8], name: &str, comment: &str) -> Result<()> {
+    let text = std::str::from_utf8(output).context("nft returned invalid text")?;
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    anyhow::ensure!(
+        lines.next() == Some(format!("table inet {name} {{").as_str())
+            && lines.next() == Some(format!("comment \"{comment}\"").as_str()),
+        "nft table text has no supported table ownership comment"
+    );
+    Ok(())
+}
+
+fn recover_table_comment(
+    executor: &impl NftExecutor,
+    output: &[u8],
+    name: &str,
+    comment: &str,
+) -> Result<Vec<u8>> {
+    let mut ruleset: Value = serde_json::from_slice(output).context("nft returned invalid JSON")?;
+    if let Some(entries) = ruleset.get_mut("nftables").and_then(Value::as_array_mut) {
+        for entry in entries {
+            let Some(table) = entry.get_mut("table") else {
+                continue;
+            };
+            if string_field(table, "family") == Some(NFT_FAMILY)
+                && string_field(table, "name") == Some(name)
+                && table.get("comment").is_none()
+            {
+                let text = executor
+                    .execute(&["list", "table", NFT_FAMILY, name], &[])
+                    .context("failed to read table ownership comment")?;
+                verify_text_table_comment(&text, name, comment)?;
+                table["comment"] = Value::String(comment.into());
+            }
+        }
+    }
+    Ok(serde_json::to_vec(&ruleset)?)
+}

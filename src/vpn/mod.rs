@@ -91,6 +91,11 @@ pub trait VpnDriver: Send + Sync {
 
     async fn is_up(&self, interface: &str) -> Result<bool, VpnDriverError>;
 
+    /// Connectivity check, separate from administrative link state.
+    async fn is_healthy(&self, interface: &str) -> Result<bool, VpnDriverError> {
+        self.is_up(interface).await
+    }
+
     async fn read_ownership_proof(
         &self,
         interface: &str,
