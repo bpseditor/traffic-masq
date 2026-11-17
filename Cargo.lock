@@ -920,16 +920,15 @@ dependencies = [
 
 [[package]]
 name = "genetlink"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0bc61df27194def0f714249ee8a5abb15f031daa8d1eff1c0bf661aee80203d"
+checksum = "d20090823996d07b8c57fcb5f57b641288b2224719322062557f60ccc537d4fc"
 dependencies = [
  "futures",
  "log",
  "netlink-packet-core",
  "netlink-packet-generic",
- "netlink-proto 0.13.0",
- "thiserror 1.0.69",
+ "netlink-proto 0.14.1",
  "tokio",
 ]
 
