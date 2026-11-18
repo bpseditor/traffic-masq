@@ -2867,7 +2867,7 @@ dependencies = [
  "argon2",
  "async-trait",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "clap",
  "fs2",
  "futures-util",
@@ -3039,7 +3039,7 @@ name = "traffic-masq-wireguard"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "futures-util",
  "genetlink",
  "ipnet",
