@@ -1025,14 +1025,18 @@ async fn apply_vpn_chain_restores_previous_hop_when_replacement_fails() {
     let (subsystems, vpn_provider, net, _dir) = chain_subsystems().await;
     net.add_interface("tm-wg-0", 2).await;
     net.add_interface("tm-wg-1", 3).await;
-    let previous = relay_hop(0, "tm-wg-0", "wan0");
     subsystems
         .apply_vpn_chain(&VpnChainPlan {
             standalone: None,
-            hops: vec![previous.clone()],
+            hops: vec![relay_hop(0, "tm-wg-0", "wan0")],
         })
         .await
         .expect("previous hop activates");
+    let previous_rules = net.rules.lock().await.clone();
+    let previous_routes = net.routes.lock().await.clone();
+    assert_eq!(previous_rules.len(), 1);
+    assert_eq!(previous_routes.len(), 1);
+    assert_eq!(previous_routes[0].output_interface_index, Some(1));
     vpn_provider.fail_create_link_for("tm-wg-1");
 
     let error = subsystems
@@ -1046,10 +1050,8 @@ async fn apply_vpn_chain_restores_previous_hop_when_replacement_fails() {
 
     assert!(!vpn_provider.link_exists("tm-wg-1").await.unwrap());
     assert!(vpn_provider.link_exists("tm-wg-0").await.unwrap());
-    assert_eq!(net.rules.lock().await.len(), 1);
-    let routes = net.routes.lock().await;
-    assert_eq!(routes.len(), 1);
-    assert_eq!(routes[0].output_interface_index, Some(2));
+    assert_eq!(*net.rules.lock().await, previous_rules);
+    assert_eq!(*net.routes.lock().await, previous_routes);
 }
 
 #[tokio::test]
