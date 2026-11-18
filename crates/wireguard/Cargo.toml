@@ -8,7 +8,7 @@ description = "WireGuard profile parser and Linux netlink adapter for traffic-ma
 
 [dependencies]
 async-trait = "0.1"
-base64 = "0.22"
+base64 = "0.23"
 futures-util = "0.3"
 genetlink = "0.3"
 ipnet = "2"

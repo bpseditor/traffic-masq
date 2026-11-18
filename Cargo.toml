@@ -29,7 +29,7 @@ anyhow = "1"
 argon2 = "0.6"
 async-trait = "0.1"
 axum = "0.8"
-base64 = "0.22"
+base64 = "0.23"
 clap = { version = "4", features = ["derive"] }
 fs2 = "0.4"
 futures-util = "0.3"
@@ -37,7 +37,7 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "server", "service", "tokio"] }
 ipnet = { version = "2", features = ["serde"] }
-nix = { version = "0.29", features = ["fs", "net", "process", "signal", "socket", "uio", "user"] }
+nix = { version = "0.31", features = ["fs", "net", "process", "signal", "socket", "uio", "user"] }
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 rand = "0.10"
 rpassword = "7"
@@ -65,7 +65,7 @@ traffic-masq-netlink = { path = "crates/netlink" }
 traffic-masq-host-observation = { path = "crates/host-observation" }
 traffic-masq-protocol = { path = "crates/protocol" }
 traffic-masq-wireguard = { path = "crates/wireguard" }
-wl-nl80211 = "=0.8.0"
+wl-nl80211 = "=0.9.0"
 zeroize = { version = "1", features = ["serde"] }
 
 [dev-dependencies]

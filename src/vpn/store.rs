@@ -1,7 +1,6 @@
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read};
 use std::os::unix::fs::FileTypeExt;
-use std::os::unix::io::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -228,13 +227,13 @@ impl WireGuardProfileStore {
 
 fn read_optional_regular(path: &Path) -> Result<Option<Zeroizing<Vec<u8>>>, StoreError> {
     let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK;
-    let raw_fd = match open(path, flags, Mode::empty()) {
+    let fd = match open(path, flags, Mode::empty()) {
         Ok(fd) => fd,
         Err(Errno::ENOENT) => return Ok(None),
         Err(Errno::ELOOP) => return Err(StoreError::SymlinkRejected(path.to_path_buf())),
         Err(error) => return Err(error.into()),
     };
-    let file = unsafe { File::from_raw_fd(raw_fd) };
+    let file = File::from(fd);
     if !file.metadata()?.is_file() {
         return Err(
             std::io::Error::new(ErrorKind::InvalidData, "profile must be a regular file").into(),
@@ -315,7 +314,7 @@ pub(crate) fn read_source_profile(
         Mode::empty(),
     )
     .map_err(|error| std::io::Error::from_raw_os_error(error as i32))?;
-    let file = unsafe { File::from_raw_fd(fd) };
+    let file = File::from(fd);
     if !file.metadata()?.is_file() {
         return Err(StoreError::PathEscape);
     }

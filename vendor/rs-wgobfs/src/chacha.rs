@@ -11,7 +11,7 @@
 use crate::guts::ChaCha;
 use core::fmt;
 use rand_core::block::{BlockRng, BlockRngCore, CryptoBlockRng};
-use rand_core::{CryptoRng, RngCore, SeedableRng};
+use rand_core::{CryptoRng, RngCore};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -92,17 +92,6 @@ macro_rules! chacha_impl {
             }
         }
 
-        impl SeedableRng for $ChaChaXCore {
-            type Seed = [u8; 32];
-
-            #[inline]
-            fn from_seed(seed: Self::Seed) -> Self {
-                $ChaChaXCore {
-                    state: ChaCha::new(&seed, &[0u8; 8]),
-                }
-            }
-        }
-
         impl CryptoBlockRng for $ChaChaXCore {}
 
         /// A cryptographically secure random number generator that uses the ChaCha algorithm.
@@ -124,7 +113,7 @@ macro_rules! chacha_impl {
         /// except that we use a stream identifier in place of a nonce. A 64-bit counter over 64-byte
         /// (16 word) blocks allows 1 ZiB of output before cycling, and the stream identifier allows
         /// 2<sup>64</sup> unique streams of output per seed. Both counter and stream are initialized
-        /// to zero but may be set via the `set_word_pos` and `set_stream` methods.
+        /// according to the constructor input.
         ///
         /// The word layout is:
         ///
@@ -146,18 +135,6 @@ macro_rules! chacha_impl {
         #[derive(Clone, Debug)]
         pub struct $ChaChaXRng {
             pub(crate) rng: BlockRng<$ChaChaXCore>,
-        }
-
-        impl SeedableRng for $ChaChaXRng {
-            type Seed = [u8; 32];
-
-            #[inline]
-            fn from_seed(seed: Self::Seed) -> Self {
-                let core = $ChaChaXCore::from_seed(seed);
-                Self {
-                    rng: BlockRng::new(core),
-                }
-            }
         }
 
         impl RngCore for $ChaChaXRng {
@@ -217,26 +194,6 @@ macro_rules! chacha_impl {
                     .generate_and_set((word_offset % u128::from(BLOCK_WORDS)) as usize);
             }
 
-            /// Set the stream number.
-            ///
-            /// This is initialized to zero; 2<sup>64</sup> unique streams of output
-            /// are available per seed/key.
-            ///
-            /// Note that in order to reproduce ChaCha output with a specific 64-bit
-            /// nonce, one can convert that nonce to a `u64` in little-endian fashion
-            /// and pass to this function. In theory a 96-bit nonce can be used by
-            /// passing the last 64-bits to this function and using the first 32-bits as
-            /// the most significant half of the 64-bit counter (which may be set
-            /// indirectly via `set_word_pos`), but this is not directly supported.
-            #[inline]
-            pub fn set_stream(&mut self, stream: u64) {
-                self.rng.core.state.set_nonce(stream);
-                if self.rng.index() != 64 {
-                    let wp = self.get_word_pos();
-                    self.set_word_pos(wp);
-                }
-            }
-
             /// Get the stream number.
             #[inline]
             pub fn get_stream(&self) -> u64 {
@@ -289,6 +246,7 @@ macro_rules! chacha_impl {
         }
 
         mod $abst {
+            use super::{ChaCha, $ChaChaXCore};
             #[cfg(feature = "serde")]
             use serde::{Deserialize, Serialize};
 
@@ -318,9 +276,8 @@ macro_rules! chacha_impl {
             impl From<&$ChaChaXRng> for super::$ChaChaXRng {
                 // Construct one of the possible concrete RNGs realizing an abstract state.
                 fn from(a: &$ChaChaXRng) -> Self {
-                    use rand_core::SeedableRng;
-                    let mut r = Self::from_seed(a.seed);
-                    r.set_stream(a.stream);
+                    let state = ChaCha::new(&a.seed, &a.stream.to_le_bytes());
+                    let mut r = Self::from($ChaChaXCore { state });
                     r.set_word_pos(a.word_pos);
                     r
                 }

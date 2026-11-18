@@ -97,11 +97,6 @@ impl ChaCha {
     }
 
     #[inline(always)]
-    pub fn set_nonce(&mut self, value: u64) {
-        set_stream_param(self, STREAM_PARAM_NONCE, value)
-    }
-
-    #[inline(always)]
     pub fn get_nonce(&self) -> u64 {
         get_stream_param(self, STREAM_PARAM_NONCE)
     }
