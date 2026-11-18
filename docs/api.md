@@ -576,6 +576,7 @@ selection where supported.
 
 `WifiApProvision`
 
+<!-- example: wifi-ap-provision -->
 ```json
 {
   "settings": { "ssid": "traffic-masq", "band": "2g", "channel": 6,
@@ -596,6 +597,7 @@ not the network address. DHCP uses that host as the router. In contrast,
 `WifiApProfileWrite` adds an `id` beside these fields; the provisioning fields
 are flattened rather than nested under `configuration`:
 
+<!-- example: wifi-ap-profile-write -->
 ```json
 {
   "id": "guest",
@@ -678,6 +680,7 @@ specify `interface_ipv4`, `pool_start`, `pool_end`, `dns_servers`, and
 
 `InterfaceIntentWrite` wraps the `InterfaceChange.config` object:
 
+<!-- example: interface-intent-write -->
 ```json
 {
   "config": { "role": "input", "managed": true, "ipv4": null },

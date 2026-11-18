@@ -1018,7 +1018,14 @@ mod tests {
                 .expect("runbook reference has anchor")
                 .1;
             assert!(
-                runbook.contains(&format!("<a id=\"{anchor}\"></a>")),
+                runbook.lines().any(|line| {
+                    let Some((level, title)) = line.trim_start().split_once(' ') else {
+                        return false;
+                    };
+                    (1..=6).contains(&level.len())
+                        && level.bytes().all(|byte| byte == b'#')
+                        && title.trim().eq_ignore_ascii_case(anchor)
+                }),
                 "missing runbook anchor for {}",
                 code
             );

@@ -197,9 +197,8 @@ a client can reconnect. Tab moves between the list and clickable actions.
 
 In **DHCP Client**, select an interface and press **e** or Enter to edit route
 metric, default-route installation, DNS requests and Release on shutdown.
-The form loads saved settings. Changing route metric or default-route
-installation on an enabled client requires Apply → Commit and rolls back if
-unconfirmed. Initial enablement and changes to other options apply immediately.
+The form loads saved settings. Enabling, editing or disabling a DHCP client
+requires **Apply → Commit**. Renew and Release/Reacquire run immediately.
 If a DHCP default route conflicts with an existing route, traffic-masq selects
 the next free higher metric (lower priority) and logs a warning. The effective
 metric is retained with the lease across renewals and restart; saved settings
@@ -216,9 +215,8 @@ state. Repair applies immediately and has no commit-confirm timer.
 
 Open **Route → Uplink / VPN** or press **u**. Set the physical uplink and
 addressing mode: **External** uses an unmanaged Input interface; **DHCP** uses a
-managed Input with the DHCP client enabled. Import WireGuard profiles in VPN,
-then add, reorder or remove hops. The order is physical uplink → first hop →
-last hop → LAN.
+managed Input with the DHCP client enabled. Import a WireGuard profile in VPN,
+then add it as the exit hop. The daemon currently accepts one hop per chain.
 
 For **WireGuard + rs-wgobfs**, import the WireGuard `.conf` and enter the
 forwarding server's **IP**, **port** and **password**. In the daemon's source
@@ -385,15 +383,15 @@ can count forwarded traffic more than once and are not Internet usage totals.
 VPN interface/policy state is observed; Internet, DNS and handshake connectivity
 are not actively tested by the Dashboard.
 
-In **VPN**, import and select a profile, then press **Enter** or **Connect**
-to bring up its tunnel. Connect also enables VPN if it is disabled; no daemon
-restart or visit to Route is needed. Press **Enter** again or **Disconnect**
-to disconnect that profile. **Open profile** shows details and deletion actions.
-**VPN settings** contains the subsystem disable control.
-**Route → Standalone traffic policy** controls routing
-through that tunnel and applies immediately; it requires forwarding managed
-outside traffic-masq. Disconnect, select Direct policy
-and remove any saved router VPN chain before disabling VPN.
+In **VPN**, import and select a profile, then press **Enter** or **Connect**.
+If VPN is disabled, commit the enablement first, then choose **Connect** again
+and commit the connection. **Disconnect** also requires a commit. **Open
+profile** shows details and deletion actions.
+
+**Route → Standalone traffic policy** controls Direct/VPN routing and requires
+confirmation. It uses forwarding managed outside traffic-masq. Before disabling
+VPN in **VPN settings**, commit Direct policy, disconnect the standalone tunnel
+and remove any saved router VPN chain.
 
 In **Route**, configure a sharing connection or uplink and use **Plan / Apply**.
 Apply and commit the change using the normal rollback timer. There is no global
@@ -421,14 +419,11 @@ storage repair and restart. See the [recovery runbook](docs/recovery.md).
 For an absent saved adapter, intent edits and Wi-Fi deactivation instead save
 settings after verified ownership cleanup, without a confirmation timer.
 
-DHCP route metric and default-route policy changes on enabled clients use the
-interface confirmation timer. Other standalone DHCP actions, Wi-Fi runtime
-controls such as reconnect/reload/passphrase
-updates, and VPN operations apply immediately and do not use the
-interface/router confirmation timer. They instead persist ownership information
-before creating durable runtime state and reconcile it on restart. The timer
-itself needs a running daemon; crash recovery for both transaction journals and
-immediate-operation ownership records runs when the daemon starts again.
+DHCP client/server configuration and live Wi-Fi password changes use interface
+confirmation. Standalone VPN enable/disable, connect/disconnect and traffic
+policy changes use router confirmation. DHCP lease refresh, Wi-Fi
+scan/reconnect/reload and station disconnection run immediately. After a daemon
+crash, startup recovery checks transaction journals and ownership records.
 
 traffic-masq records the addresses, routes, firewall objects, Wi-Fi processes,
 DHCP leases and VPN interfaces it owns. Enabling management on an interface
@@ -557,6 +552,7 @@ traffic-masq is under development; use a spare machine for testing.
 - [Service integration](packaging/INIT.md): init systems, updates and service ownership.
 - [Security and recovery](SECURITY.md): access control, rollback and recovery policy.
 - [Architecture](docs/architecture.md): modules and how network changes are applied.
+- [Contributing](CONTRIBUTING.md): find the code and tests for a change, run local checks, and prepare it for review.
 - [Releases](docs/release.md): testing and packaging.
 
 ## Checks

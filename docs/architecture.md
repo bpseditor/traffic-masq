@@ -4,22 +4,30 @@
 talks to it through HTTP over a Unix socket or verified HTTPS. In direct mode,
 the client reads interface state itself and cannot make changes.
 
+For a first change, follow the [contributor guide](../CONTRIBUTING.md).
+See [architecture decisions](architecture-decisions.md) for the reasons behind
+responsibility moves and the current entry points.
+
 | Module | Responsibility |
 | --- | --- |
-| `api` | HTTP, authorization and control-operation limits |
-| `crates/protocol` (`traffic-masq-protocol`) | API wire DTOs and pure shared intent validation, independent of daemon internals |
-| `crates/host-observation` (`traffic-masq-host-observation`) | Init-system observation, competing network-manager discovery and operator guidance |
-| `crates/api-client` (`traffic-masq-api-client`) | Unix-socket HTTP and verified HTTPS transport, auth/session, typed command transport and response decoding |
-| `crates/tui` (`traffic-masq-tui`) | Standalone terminal client and read-only direct-mode observation |
-| `core` | Configuration, ownership, plans, transactions and reconciliation |
-| `crates/netlink` (`traffic-masq-netlink`) | Kernel interfaces, IPv4 addresses, routes, rules and change events |
-| `crates/dataplane` (`traffic-masq-dataplane`) | nftables and IPv4 forwarding models, plans and reconciliation |
-| `crates/dhcp-core` (`traffic-masq-dhcp-core`) | DHCP packets, server leases, and client state transitions |
-| `crates/wireguard` (`traffic-masq-wireguard`) | WireGuard profile parsing and Linux netlink operations |
-| `firewall` | Daemon command adapter for the dataplane crate |
-| `dhcp`, `wifi`, `vpn` | DHCP and VPN runtimes, storage and ownership; Wi-Fi service supervision |
-| `state`, `crates/atomic-file` | Persistent state and atomic file writes |
-| `app` | Startup, shutdown, installation and init integration |
+| [`src/app`](../src/app/) | Daemon startup, shutdown, reconciliation workers, installation and init integration |
+| [`src/api`](../src/api/) | REST and typed control adapters, authorization and admission |
+| [`src/core`](../src/core/) | Desired state, ownership, plans, interface and router transactions, recovery |
+| [`src/config`](../src/config/) | File configuration, defaults and validation |
+| [`src/state`](../src/state/) | Durable overrides and private storage |
+| [`src/dhcp`](../src/dhcp/) | DHCP sockets, leases and service supervision |
+| [`src/wifi`](../src/wifi/) | AP and client supervision, profiles and credentials |
+| [`src/vpn`](../src/vpn/) | VPN profile storage, tunnel runtime and ownership |
+| [`src/firewall`](../src/firewall/) | Daemon nftables adapter for the dataplane crate |
+| [`crates/protocol`](../crates/protocol/) | Request/response types, request policy and pure intent validation |
+| [`crates/api-client`](../crates/api-client/) | Unix-socket HTTP, verified HTTPS, authentication and typed transport |
+| [`crates/tui`](../crates/tui/) | Terminal client and read-only direct mode |
+| [`crates/netlink`](../crates/netlink/) | Kernel interfaces, IPv4 addresses, routes, rules and change events |
+| [`crates/dataplane`](../crates/dataplane/) | nftables and IPv4 forwarding models, plans and reconciliation |
+| [`crates/dhcp-core`](../crates/dhcp-core/) | DHCP packets, server leases and client state transitions |
+| [`crates/wireguard`](../crates/wireguard/) | WireGuard profile parsing, kernel provider and obfuscation transport |
+| [`crates/atomic-file`](../crates/atomic-file/) | Atomic file replacement and durable storage primitives |
+| [`crates/host-observation`](../crates/host-observation/) | Read-only init and competing network-manager discovery |
 
 The root library re-exports `traffic-masq-netlink` as `traffic_masq::netlink`
 for existing callers. The netlink crate depends only on kernel protocol and

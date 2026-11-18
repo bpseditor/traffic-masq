@@ -430,28 +430,29 @@ fn ap_profile_mutations_require_administrator() {
 
 #[test]
 fn documented_ap_and_offline_intent_examples_match_request_contracts() {
-    fn example(label: &str) -> &str {
+    fn example(id: &str) -> &str {
         let guide = include_str!("../../../docs/api.md");
+        let marker = format!("<!-- example: {id} -->");
         let section = guide
-            .split_once(label)
-            .expect("documented request schema")
+            .split_once(marker.as_str())
+            .unwrap_or_else(|| panic!("missing API example {id}"))
             .1;
         section
-            .split_once("```json\n")
-            .expect("JSON example")
-            .1
+            .trim_start()
+            .strip_prefix("```json\n")
+            .unwrap_or_else(|| panic!("expected a JSON block after {marker}"))
             .split_once("\n```")
             .expect("end of JSON example")
             .0
     }
 
     let ap: ProvisionWifiAccessPointRequest =
-        serde_json::from_str(example("`WifiApProvision`\n")).unwrap();
+        serde_json::from_str(example("wifi-ap-provision")).unwrap();
     assert!(ap.configure_dhcp);
     crate::dhcp::defaults::suggest_pool(ap.subnet.unwrap()).unwrap();
 
     let profile: traffic_masq_protocol::WifiApProfileWriteRequest =
-        serde_json::from_str(example("`WifiApProfileWrite` adds")).unwrap();
+        serde_json::from_str(example("wifi-ap-profile-write")).unwrap();
     assert!(profile.configuration.configure_dhcp);
     crate::dhcp::defaults::suggest_pool(profile.configuration.subnet.unwrap()).unwrap();
     let directory = tempfile::tempdir().unwrap();
@@ -461,7 +462,7 @@ fn documented_ap_and_offline_intent_examples_match_request_contracts() {
         .unwrap();
 
     let intent: SaveInterfaceIntentRequest =
-        serde_json::from_str(example("`InterfaceIntentWrite` wraps")).unwrap();
+        serde_json::from_str(example("interface-intent-write")).unwrap();
     let config: InterfaceConfig = intent.config.into();
     config.validate("wlan0").unwrap();
 }

@@ -188,8 +188,9 @@ with the recovery code as the first decision point.
 
 ## Filesystem access failures
 
-<a id="tm-rec-101"></a>
-### `TM-REC-101` — `accessible_interface_recovery_store`
+### TM-REC-101
+
+Invariant `accessible_interface_recovery_store`.
 
 The daemon could not safely open or enumerate the interface recovery store. This
 is a **global startup blocker** because it cannot prove which interface
@@ -223,8 +224,9 @@ Safe procedure:
 A corrupt journal *inside* this directory is normally scoped to that interface;
 a failure to access the directory itself is not.
 
-<a id="tm-rec-202"></a>
-### `TM-REC-202` — `accessible_router_recovery_journal`
+### TM-REC-202
+
+Invariant `accessible_router_recovery_journal`.
 
 The router recovery journal exists or may exist, but the daemon cannot safely
 inspect/read it. The journal, when present, must be a private regular file and
@@ -281,8 +283,9 @@ journal is blocked.
 
 ## Router journal validation and commit failures
 
-<a id="tm-rec-201"></a>
-### `TM-REC-201` — `provable_router_recovery`
+### TM-REC-201
+
+Invariant `provable_router_recovery`.
 
 This is the higher-level router startup invariant. With
 `operator_action=inspect_recovery_state`, the nested diagnostic is the useful
@@ -294,8 +297,9 @@ The router journal is normally
 `<state_dir>/router-transaction.json`. These failures are startup-blocking when
 the daemon lacks an independent proof that the transaction committed.
 
-<a id="tm-rec-203"></a>
-### `TM-REC-203` — `decodable_recovery_snapshot`
+### TM-REC-203
+
+Invariant `decodable_recovery_snapshot`.
 
 The router journal is not valid JSON. Text that merely *looks* like a transaction
 token inside malformed JSON is not trusted as commit proof.
@@ -312,8 +316,9 @@ If no coherent backup exists, retain the state and diagnostic for manual
 forensics; there is no safe automatic rule that can infer the missing commit
 proof from corrupt bytes.
 
-<a id="tm-rec-204"></a>
-### `TM-REC-204` — `valid_recovery_snapshot`
+### TM-REC-204
+
+Invariant `valid_recovery_snapshot`.
 
 The journal is syntactically valid JSON but does not have a valid router
 transaction structure.
@@ -323,8 +328,9 @@ record, and restore the complete state directory from one coherent backup. The
 reported `required_proof=independent_committed_transaction_token` means the
 journal itself is not sufficient evidence of a successful commit.
 
-<a id="tm-rec-205"></a>
-### `TM-REC-205` — `supported_schema`
+### TM-REC-205
+
+Invariant `supported_schema`.
 
 The journal structure is readable, but its schema version is not supported by
 the running daemon. The diagnostic includes `journal_schema` and
@@ -342,8 +348,9 @@ Safe procedure:
 Do not downgrade only the journal. State files can evolve together and must stay
 consistent.
 
-<a id="tm-rec-206"></a>
-### `TM-REC-206` — `revision_order`
+### TM-REC-206
+
+Invariant `revision_order`.
 
 The router journal was created against a newer committed revision than the
 runtime state currently reports. The diagnostic includes, for example:
@@ -367,8 +374,9 @@ Safe procedure:
 4. Restore the **complete state directory** from one coherent backup.
 5. Restart and verify that the revision-order diagnostic is gone.
 
-<a id="tm-rec-209"></a>
-### `TM-REC-209` — `commit_indeterminate`
+### TM-REC-209
+
+Invariant `commit_indeterminate`.
 
 The override replacement failed and restoring its previous contents also failed.
 The file may contain the new commit token while the running daemon still holds
@@ -402,8 +410,9 @@ are intentionally not stored in normal runtime overrides. The default journal is
 Treat this file and its backups as sensitive. Do not paste its contents into bug
 reports, terminal transcripts or support messages.
 
-<a id="tm-rec-301"></a>
-### `TM-REC-301` — `restore_provisioning_secrets`
+### TM-REC-301
+
+Invariant `restore_provisioning_secrets`.
 
 This is a higher-level startup invariant. `operator_action=inspect_recovery_state`
 means the nested error is the important part. Inspect the complete error/log
@@ -417,8 +426,9 @@ must not be symlinks.
 If the nested cause is one of the validation invariants below, follow that
 specific runbook.
 
-<a id="tm-rec-302"></a>
-### `TM-REC-302` — `valid_provisioning_secret_snapshot`
+### TM-REC-302
+
+Invariant `valid_provisioning_secret_snapshot`.
 
 The provisioning-secret journal cannot be decoded as the supported record type.
 Do not edit or selectively reconstruct it.
@@ -430,8 +440,9 @@ Safe procedure:
 3. Restore the complete state directory from one coherent backup.
 4. Start the daemon and verify that the provisioning recovery invariant is gone.
 
-<a id="tm-rec-303"></a>
-### `TM-REC-303` — `supported_provisioning_secret_schema`
+### TM-REC-303
+
+Invariant `supported_provisioning_secret_schema`.
 
 The provisioning-secret journal is structurally valid but uses a schema this
 binary does not support. The diagnostic reports `journal_schema` and
@@ -448,8 +459,9 @@ Safe procedure:
 
 Not every recovery problem blocks the daemon process.
 
-<a id="tm-rec-207"></a>
-### `TM-REC-207` — `router_rollback_failed`
+### TM-REC-207
+
+Invariant `router_rollback_failed`.
 
 If the router journal was understood but rollback itself failed, the coordinator
 can remain in `RollbackFailed` while the control plane stays available. New
@@ -468,8 +480,9 @@ Safe response:
 5. Recovery is complete when the coordinator returns to `idle` and new router
    transactions are admitted again.
 
-<a id="tm-rec-208"></a>
-### `TM-REC-208` — `router_journal_cleanup_pending`
+### TM-REC-208
+
+Invariant `router_journal_cleanup_pending`.
 
 Runtime recovery has already completed, but the recovery journal or its receipt
 could not yet be retired. The control plane remains available, but new router

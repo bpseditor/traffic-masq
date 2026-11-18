@@ -47,7 +47,7 @@ The TUI serves as the primary operational console for the `traffic-masq` network
 | [`wifi/ap_profiles.rs`](wifi/ap_profiles.rs) | Saved AP profile menu, library, edit/delete/apply actions and deletion confirmation. | `WifiApProfilesView`, `open_ap_profiles`, `render_wifi_ap_profiles` |
 | [`wifi/`](wifi) | Wi-Fi screen implementations split by responsibility: AP editor, scan picker, saved profiles, profile editor, connect/IP prompt, and Wi-Fi-specific tests. | `ap_editor`, `scan`, `profiles`, `profile_editor`, `ap_profiles`, `connect` |
 | [`vpn.rs`](vpn.rs) | WireGuard VPN profile management, connection lifecycle, configuration import wizard, deletion confirmation. | `VpnData`, `VpnFocus`, `VpnImportEditor` |
-| [`vpn_policy.rs`](vpn_policy.rs) | Immediate standalone Direct/VPN policy, entered from Route; separate from the global chain and router draft. | `VpnPolicyData`, `VpnPolicyField` |
+| [`vpn_policy.rs`](vpn_policy.rs) | Standalone Direct/VPN policy, entered from Route and confirmed on the router pending screen. | `VpnPolicyData`, `VpnPolicyField` |
 | [`settings.rs`](settings.rs) | Daemon configuration, rollback timeout settings, session preferences, device password update wizard, security override reset. | `SecurityEditor`, `SettingsField`, `PasswordChangeEditor` |
 | [`access.rs`](access.rs) | Remote HTTPS access configuration (TLS listen socket, certificate and private key file paths). | `AccessEditor`, `AccessField` |
 | [`daemon_logs.rs`](daemon_logs.rs) | Bounded daemon log snapshots, severity/text filters, pause/follow and private export. | `View` |
@@ -117,7 +117,12 @@ Because misconfiguring an IP address or firewall rule can sever SSH access, inte
    - On the Route screen, degraded recovery shows the recovery code, invariant, blocked operation, action and runbook. Press **r** to retry a failed rollback; for `TM-REC-208` journal-cleanup-pending, cleanup retries automatically and **r** refreshes status.
 3. **Disconnect Handling:** If the daemon becomes unreachable while on a pending screen, the TUI retains the pending change state and warns the operator that the outcome is unverified rather than falsely claiming success.
 
-Standalone DHCP, Wi-Fi runtime controls such as reconnect/reload/passphrase updates, and VPN actions do not enter these pending screens and do not expose a commit timer. Live operator-triggered AP/client deactivation enters the pending-change screen. For an absent adapter, cleanup and durable intent saving return without a timer. Immediate mutations rely on the daemon's durable ownership/recovery mechanisms rather than TUI rollback state.
+DHCP client/server configuration and disable, live Wi-Fi passphrase updates, and
+live AP/client deactivation open **Pending change**. Standalone VPN enable/disable,
+connect/disconnect and Direct/VPN policy changes open **Router pending**. DHCP
+lease refresh and Wi-Fi scan, reconnect, reload and station deauthentication
+run immediately. For an absent adapter, verified cleanup and durable intent
+saving finish without a timer. See the [admission and confirmation table](../../../../docs/change-safety.md#admission-and-confirmation).
 
 Immediate action confirmations share `confirmation.rs`: saved Wi-Fi/VPN profile
 removal, offline interface Delete/Restore, router Repair, security Reset/Save,
@@ -125,8 +130,9 @@ Wi-Fi station disconnect, log clearing, and leaving interface/AP drafts or disca
 view identifies its target and consequences and has named action / Cancel
 buttons. Tab/Shift+Tab and arrows select an action; Enter executes the selected action;
 Esc cancels. Background mouse targets do not change the action. Header navigation is blocked until the dialog closes.
-These dialogs create no network transaction or rollback timer. Session
-preferences save on the first Enter.
+These dialogs confirm the requested action before sending it. Router Repair
+then reapplies committed intent through the coordinator without a commit timer.
+Session preferences save on the first Enter.
 
 Applied Wi-Fi interface settings and credentials are independent of the profile
 library. The daemon rejects deletion of a currently active client profile and
@@ -385,9 +391,10 @@ cursor and error styling with `layout::wrap_styled_lines`.
 ### VPN profile and Route boundary
 
 VPN lists profiles and connection state. Enter on a profile or Connect/Disconnect
-operates directly, without opening a card or visiting Route. Connect enables a
-disabled subsystem and refreshes runtime status before activation through the same
-VPN API. Open profile is a separate details/deletion action. Basic refresh does
+opens router confirmation without opening a card or visiting Route. If VPN is
+disabled, Connect opens confirmation for enablement first. After committing
+enablement, choose Connect again to start the connection transaction.
+Open profile is a separate details/deletion action. Basic refresh does
 not query router configuration; only profile details fetch saved-chain usage,
 which never gates connection. VPN settings retains the explicit availability
 control and disabling prerequisites. Refresh preserves selection by profile name and distinguishes
