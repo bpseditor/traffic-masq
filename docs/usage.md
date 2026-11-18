@@ -6,7 +6,7 @@
 
 ## Requirements
 
-#### Network manager conflicts
+### Network manager conflicts
 
 Before configuring an interface, release it from any other network manager or
 independent DHCP/Wi-Fi service. Distribution defaults vary, and competing
@@ -16,7 +16,7 @@ for detection, persistent exclusions, handover and verification after reboot.
 An externally managed WAN can remain with its current manager when used only as
 an existing uplink.
 
-## Build
+### Build tools
 
 - Rust toolchain with Cargo
 - a C compiler (`cc`, `gcc` or `clang`)
@@ -563,13 +563,11 @@ Tab selects the refresh/disconnect/back buttons; scrolling selects the list.
 Enable the DHCP Client tab in Settings if hidden. Select an interface and press
 **e** or Enter to load its saved DHCP policy. Edit the route metric and toggle
 installation of the default route, requesting DNS, and sending Release on
-shutdown. Changing the route metric or default-route installation on an enabled
-client uses the interface transaction and requires confirmation before its
-rollback timer expires. Cancel or timeout restores the previous DHCP policy
-through convergence; lease state is managed by the DHCP supervisor. Initial
-enablement and changes to other options remain immediate. Errors retain the
-draft. Esc discards it. **c** on the list
-continues to enable/reset the client to defaults.
+shutdown. Apply and commit to keep the new policy. Enabling and disabling the
+client also require confirmation. Rollback restores the previous DHCP policy
+through convergence. The DHCP supervisor manages lease state. Errors retain the
+draft. Esc discards it. **c** on the list applies defaults through the same
+confirmation flow.
 
 ### Settings and running operations
 
@@ -808,29 +806,23 @@ not keep its transaction pending once surviving owned services and leases have
 been cleaned up. Connectivity can remain unavailable after successful rollback.
 Inspect pending state to learn the outcome.
 
-DHCP route metric and default-route policy changes on enabled clients use the
-interface confirmation timer. Other standalone DHCP controls, VPN controls and
-Wi-Fi runtime controls such as reconnect/reload/passphrase updates take effect
-immediately without an interface/router confirmation timer. Operator-triggered
-Wi-Fi configuration, profile activation, and live AP/client deactivation use the
-same tentative commit-confirm flow as other connectivity-sensitive interface changes. For an
-absent adapter with saved intent, edits/deactivation instead save intent after
-verified cleanup without a timer; see [disconnected adapters](#editing-disconnected-adapters). The
-immediate subsystems write durable ownership or launch records before persistent
-runtime state is created, then reconcile those records against committed
-configuration on startup. This lets recovery remove only traffic-masq-owned
-crash residue without treating foreign processes, leases or interfaces as its
-own.
+DHCP client/server configuration and disable, live Wi-Fi password updates,
+operator-triggered Wi-Fi configuration, profile activation and live AP/client
+deactivation use interface confirmation. Standalone VPN enable/disable,
+connect/disconnect and Direct/VPN policy changes use router confirmation.
+Lease renewal and release/reacquire, Wi-Fi scan/reconnect/reload and station
+deauthentication are immediate. See the full [admission table](change-safety.md#admission-and-confirmation).
+
+For an absent adapter with saved intent, edits and deactivation save intent
+after verified cleanup without a timer. See [disconnected adapters](#editing-disconnected-adapters).
 
 If an interface/router change cuts off your connection, the daemon rolls it
 back locally after the timer expires and admitted operations finish. If commit
 persistence and its compensation both fail, rollback is blocked until storage is
 repaired and the daemon is restarted; see [TM-REC-209](recovery.md#tm-rec-209).
-The daemon must still be running for the
-timer to fire; after a crash, recovery runs on restart. Immediate DHCP/VPN and
-Wi-Fi runtime-control operations also run their ownership recovery during startup. See
-[recovery](../SECURITY.md#rollback-and-recovery) and the
-[operator recovery runbook](recovery.md).
+After a crash, startup recovery checks transaction journals and reconciles
+durable ownership records against committed intent. See [recovery](../SECURITY.md#rollback-and-recovery)
+and the [operator recovery runbook](recovery.md).
 
 ### What the daemon considers its own
 
@@ -891,16 +883,16 @@ Press **2** for aggregate statistics, then **Down/Up** to browse individual
 interfaces; **Home** returns to the aggregate view. The **DHCP Client** section
 shows configured uplink DHCP clients; DHCP status is not part of the Dashboard.
 Before configuring a DHCP client, use **Interfaces** to apply and commit a
-managed `input` interface without a static IPv4 address. DHCP configuration
-requires that prepared interface and applies immediately.
+managed `input` interface without a static IPv4 address. Apply and commit the
+DHCP client configuration separately.
 The overview reports whether the VPN subsystem is enabled; this switch alone does not prove a tunnel is connected.
 
 The **VPN** tab lists saved profiles and their connection state. Select a profile
-and press **Enter** or **Connect** to connect it directly. Connect enables a disabled
-VPN subsystem, checks its current connection and activates the selected profile.
-**Enter** on the connected profile or **Disconnect** disconnects it. These operations
-apply immediately and stay in VPN; they do not edit routing or change a Route draft.
-Disconnect the active profile before connecting another.
+and press **Enter** or **Connect**. If VPN is disabled, commit enablement and
+then select **Connect** again. Commit the connection on the router pending
+screen. **Enter** on the connected profile or **Disconnect** starts a separate
+transaction. Commit Direct policy before disconnecting a tunnel that protects
+traffic. Disconnect the active profile before connecting another.
 
 **Open profile** shows additional details, saved-chain and unapplied-draft membership,
 and confirmed deletion. Chain tunnels are separate from the connection controlled
@@ -910,10 +902,10 @@ VPN is disabled. **VPN settings** retains explicit Enable/Disable and the daemon
 disabling prerequisites. Failed or uncertain operations require a fresh status read
 before another connection attempt.
 
-**Route → Standalone traffic policy** controls the existing immediate Direct/VPN
-policy for the standalone tunnel, over forwarding and direct-mode NAT managed
-outside traffic-masq. It is separate from the Route draft and is
-unavailable with a saved global chain. **Route → Uplink / VPN** continues to edit
+**Route → Standalone traffic policy** uses router confirmation to change
+Direct/VPN policy for the standalone tunnel. Forwarding and direct-mode NAT are
+managed outside traffic-masq. The policy is saved independently of the Route
+draft and is unavailable with a saved global chain. **Route → Uplink / VPN** edits
 the global chain through plan/apply/confirmation. Saved membership and interface
 up do not prove connectivity or active traffic protection. See the
 [VPN and Route architecture contract](vpn-ui-architecture.md) for dependencies,

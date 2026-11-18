@@ -1,18 +1,18 @@
-# VPN and Route: current architecture and UI contract
+# VPN and Route architecture
 
-This document describes the existing daemon boundaries used by the VPN UI.
-Moving a control between screens does not change its API or execution model.
+The VPN tab manages the profile library and standalone tunnel. Route manages
+traffic policy and the global VPN chain.
 
 ## Dependencies and ownership
 
 | Resource | Dependencies | Owner and application path |
 | --- | --- | --- |
 | Saved WireGuard profile | Profile store, valid profile contents | VPN library; import/delete apply immediately |
-| Standalone tunnel | Enabled VPN, saved profile, available owned `tm-wg0` | `VpnManager`; `VpnActivate` / `VpnDeactivate` apply immediately |
-| Standalone traffic policy | Enabled VPN, global uplink, managed Output IPv4 subnets, externally managed forwarding; VPN mode additionally needs a healthy standalone interface | `VpnPolicyManager`; immediate Direct/VPN override, separate from router drafts |
+| Standalone tunnel | Enabled VPN, saved profile, available owned `tm-wg0` | Router coordinator confirms `VpnActivate` / `VpnDeactivate`; `VpnManager` manages the tunnel |
+| Standalone traffic policy | Enabled VPN, global uplink, managed Output IPv4 subnets, externally managed forwarding; VPN mode additionally needs a healthy standalone interface | Router coordinator confirms the Direct/VPN override; `VpnPolicyManager` manages policy independently of router drafts |
 | Global VPN chain | Enabled VPN, physical uplink, saved profiles; LAN traffic needs explicit forwarding rules | Router coordinator; shared draft, plan, apply, confirmation, rollback |
 | Router's own traffic through VPN | Configured global chain and `route_host_traffic` | Router coordinator; exit policy includes kill switch and IPv6 egress blocking |
-| VPN enabled setting | VPN control plane; disabling requires no saved chain, Direct effective policy, and no standalone active record | Persisted subsystem availability; not a disconnect-all operation |
+| VPN enabled setting | VPN control plane; disabling requires no saved chain, Direct effective policy, and no standalone active record | Router coordinator confirms subsystem availability |
 
 Implementation references:
 
@@ -58,10 +58,11 @@ forwarding in VPN mode.
    not activate it. The card pins its name, so list
    refreshes cannot silently retarget profile actions or deletion confirmation.
 2. Standalone connect/disconnect only operates on `tm-wg0`. Selecting another
-   profile never implicitly disconnects or replaces the active profile. Connecting
-   enables a disabled subsystem through SetVpnEnabled, reads VpnStatus, then calls
-   VpnActivate only if no connection is active. Failed or uncertain enable/status
-   results stop this sequence. There is no automatic compensation or mutation retry.
+   profile never implicitly disconnects or replaces the active profile. If VPN
+   is disabled, Connect first opens confirmation for `SetVpnEnabled`. After
+   committing, the operator chooses Connect again to start `VpnActivate`.
+   Activation and deactivation open router confirmation. After an uncertain
+   response the UI requires a fresh status read before another connection attempt.
    Chain membership does not redirect or block connection: per-hop managers own
    separate interfaces. The daemon remains responsible for resource conflicts.
 3. Chain edits continue through the existing Uplink / VPN editor and shared Route
@@ -72,13 +73,11 @@ forwarding in VPN mode.
    standalone active-profile protection remains in the manager. The UI also
    prevents deletion of a profile referenced by its unapplied local Route draft.
    Deletion still requires confirmation of the pinned original name.
-5. Standalone policy stays an immediate operation, even though its entry point
-   is now in Route. It is labelled accordingly and is unavailable when a saved
-   global chain exists. The API remains responsible for coexistence and recovery
-   gates; the TUI does not combine policy calls into a router transaction.
-   Direct VPN mutations require administrator authorization, pass shared network
-   admission/execution gates, and are blocked by pending interface/router
-   transactions or unresolved recovery state.
+5. Standalone policy opens router confirmation from Route and is unavailable
+   when a saved global chain exists. The API enforces administrator
+   authorization, coexistence and the shared admission and recovery gates.
+   Pending interface/router transactions and unresolved recovery state can
+   block these changes.
 6. VPN settings retain the daemon's disabling prerequisites. Disabling does not
    delete saved profiles. Production startup builds the profile control plane
    while disabled, so the library remains available; an unavailable runtime or
@@ -109,11 +108,10 @@ status read and disconnect is not atomically excluded by the UI. An unavailable
 saved-chain read cannot establish non-use.
 A local draft exists only in this TUI and is not known to other clients.
 
-Standalone operations do not gain a commit timer by moving their controls. Their
-existing persistence, compensation and ownership-recovery mechanisms remain in
-place. A failed rollback or ambiguous persistence outcome is not reported as
-successful recovery. These UI changes do not provide an atomic transaction spanning
-profile import, standalone activation, policy changes and router changes.
+The daemon owns the standalone confirmation deadline, persistence and recovery.
+The UI reports failed rollback and uncertain persistence through the shared
+router recovery screen. Profile import, activation and policy changes are separate
+operations. See the [connectivity contract](change-safety.md#admission-and-confirmation).
 
 ## Manual profile creation
 

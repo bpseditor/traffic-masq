@@ -102,7 +102,7 @@ fn arp_probe_encoding_and_conflict_parsing_are_rootless() {
 }
 
 #[tokio::test]
-async fn arp_probe_fake_is_bounded_and_stops_on_conflict() {
+async fn arp_probe_limits_attempts_and_stops_on_conflict() {
     let own = [0x02, 0, 0, 0, 0, 1];
     let candidate = Ipv4Addr::new(198, 51, 100, 7);
     let no_reply = FakeArpIo {
