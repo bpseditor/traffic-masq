@@ -1,7 +1,6 @@
 use std::fs::{self, File};
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::io::FromRawFd;
 use std::path::{Component, Path, PathBuf};
 
 use nix::errno::Errno;
@@ -280,13 +279,13 @@ fn check_secret_size(size: usize) -> std::io::Result<()> {
 
 fn open_secret_file(path: &Path) -> Result<Option<std::io::Take<File>>, PassphraseStoreError> {
     let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK;
-    let raw_fd = match open(path, flags, Mode::empty()) {
+    let fd = match open(path, flags, Mode::empty()) {
         Ok(fd) => fd,
         Err(Errno::ENOENT) => return Ok(None),
         Err(Errno::ELOOP) => return Err(PassphraseStoreError::SymlinkRejected(path.to_path_buf())),
         Err(error) => return Err(error.into()),
     };
-    let file = unsafe { File::from_raw_fd(raw_fd) };
+    let file = File::from(fd);
     validate_secret_file(&file)?;
     Ok(Some(file.take(MAX_SECRET_FILE_BYTES + 1)))
 }
@@ -382,7 +381,7 @@ pub fn resolve_passphrase_parts(
 
 fn read_passphrase_file(path: &Path) -> Result<WifiPassphrase, ResolvePassphraseError> {
     let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK;
-    let raw_fd = match open(path, flags, Mode::empty()) {
+    let fd = match open(path, flags, Mode::empty()) {
         Ok(fd) => fd,
         Err(Errno::ELOOP) => {
             return Err(ResolvePassphraseError::SymlinkRejected(path.to_path_buf()))
@@ -395,7 +394,7 @@ fn read_passphrase_file(path: &Path) -> Result<WifiPassphrase, ResolvePassphrase
         }
     };
 
-    let file = unsafe { File::from_raw_fd(raw_fd) };
+    let file = File::from(fd);
 
     let metadata = file
         .metadata()

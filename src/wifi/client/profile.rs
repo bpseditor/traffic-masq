@@ -1,6 +1,5 @@
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read};
-use std::os::unix::io::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -622,7 +621,7 @@ fn open_read(path: &Path) -> Result<std::io::Take<File>, WifiClientProfileError>
     let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK;
     match open(path, flags, Mode::empty()) {
         Ok(fd) => {
-            let file = unsafe { File::from_raw_fd(fd) };
+            let file = File::from(fd);
             let metadata = file.metadata()?;
             if !metadata.is_file() || metadata.len() > MAX_PROFILE_FILE_BYTES {
                 return Err(std::io::Error::new(
