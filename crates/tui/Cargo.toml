@@ -18,7 +18,7 @@ clap = { version = "4", features = ["derive"] }
 crossterm = "0.29"
 futures-util = "0.3"
 ipnet = { version = "2", features = ["serde"] }
-nix = { version = "0.31", features = ["fs", "user"] }
+nix = { version = "0.32", features = ["fs", "user"] }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29", "layout-cache"] }
 rpassword = "7"
 rand = "0.10"

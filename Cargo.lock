@@ -1526,9 +1526,21 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.31.3"
+version = "0.31.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
+checksum = "2bc81ce8148d3b4f3274da811f11cdd824ae661ee4ef732cdb229825cf5be7f7"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
+name = "nix"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77730ed34f01f4990cb2ea67fec715ecebc6fab9a6396cf83c5529b13f581bdc"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -1948,7 +1960,7 @@ dependencies = [
  "netlink-packet-route",
  "netlink-proto",
  "netlink-sys",
- "nix",
+ "nix 0.31.4",
  "tokio",
 ]
 
@@ -2859,7 +2871,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "ipnet",
- "nix",
+ "nix 0.32.0",
  "pbkdf2",
  "rand",
  "rcgen",
@@ -2919,7 +2931,7 @@ name = "traffic-masq-atomic-file"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "nix",
+ "nix 0.32.0",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -2997,7 +3009,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "ipnet",
- "nix",
+ "nix 0.32.0",
  "rand",
  "ratatui",
  "rcgen",
