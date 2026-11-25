@@ -290,6 +290,10 @@ Create the default configuration file:
 sudo traffic-masqd config init
 ```
 
+Creation refuses an existing destination, including one created concurrently.
+Use `config init --force` only when you intend to replace the selected file.
+New installer configurations follow the same create-only rule.
+
 Default path:
 
 ```text
@@ -539,9 +543,15 @@ request alive while the daemon restores the previous state. Cancellation may wai
 for an in-flight worker; acknowledgement alone does not mean rollback succeeded.
 A recovery failure remains visible in pending transactions. Confirmation, rollback
 and immediate actions complete normally; exiting the client does not cancel them.
+If completion races cancellation or the connection fails, inspect pending
+transactions with **p** on Dashboard and refresh current state before another
+change. Once Apply has returned a pending change, use **Roll back now** to undo it.
+In a terminal smaller than 80×24, use **Esc**; the clickable status target is absent.
 
-Input + Output prepares its virtual AP as a managed Output after confirmation.
-Configure its AP settings and sharing separately. Explicit saved child settings,
+Input + Output derives a managed Output for its otherwise unconfigured virtual
+AP during tentative apply; committing keeps the parent intent that derives it.
+This default supplies no IPv4 address, AP service, DHCP or sharing rule; configure
+those separately. Explicit saved child settings,
 including an unmanaged child or deleted settings, take precedence over this default.
 
 ### Daemon log viewer
@@ -553,7 +563,9 @@ severity filter. **r** refreshes the snapshot. Up/PgUp/Home pauses automatic
 refresh so the displayed history stays stable; End resumes following. The viewer
 marks stale snapshots and limited history explicitly. **e** exports the filtered
 snapshot, source filenames, destination and observation status to a local file
-with mode 0600. It does not clear or change daemon log files.
+with mode 0600 (read/write for the owner only). Session and daemon log exports
+publish a fully written file without overwriting an existing destination;
+a name collision reports an error. Export does not clear or change daemon log files.
 
 ### HTTPS connections and saved destinations
 
@@ -1139,6 +1151,10 @@ raising the link, configuring/removing Wi-Fi, waiting for association, and waiti
 for DHCP. They log elapsed time, the applicable budget, and failures with their
 OS error code when available. Explicit operations log stage boundaries at INFO;
 background reconciliation uses DEBUG so periodic retries do not flood INFO.
+DHCP client liveness logs each failure transition immediately, summarizes repeated
+identical failures every five minutes, and reports recovery. A remembered
+`Suspended` lease is not readiness: acquisition must reach `Bound` and the expected
+kernel address/routes must be present.
 Failed tentative convergence takes a bounded, read-only observation of link,
 carrier, association, supplicant PID/state, DHCP state/lease presence, and detected
 rfkill blocking. Missing observations remain unknown; no detected rfkill block

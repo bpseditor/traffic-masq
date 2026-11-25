@@ -573,6 +573,14 @@ Failures are classified by error types and kernel error codes, not message text:
 | `commit_indeterminate` | Preserve the existing commit fence; repair storage and restart. |
 | `unknown` | Retry only within the bounded cycle; do not assume the operation had no effect. |
 
+During a running transactional apply or router repair, **Esc** or the TUI progress
+status line requests cooperative cancellation. The original operation remains
+active while its coordinator handles compensation; acknowledgement is not proof
+of rollback. If completion wins the race, inspect the original result and pending
+state, then use the existing rollback action for any pending change. A lost
+connection or response does not cancel accepted work. Preserve journals and use
+the recovery diagnostics below if restoration fails.
+
 Interface cancellation restores configuration without requiring Wi-Fi association
 or a DHCP lease. Those are connectivity conditions, not completion conditions for
 rollback. When its adapter is absent, cancellation stops surviving owned service

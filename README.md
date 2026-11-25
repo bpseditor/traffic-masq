@@ -421,6 +421,12 @@ storage repair and restart. See the [recovery runbook](docs/recovery.md).
 For an absent saved adapter, intent edits and Wi-Fi deactivation instead save
 settings after verified ownership cleanup, without a confirmation timer.
 
+While a transactional apply or router repair is running, press **Esc** or click
+the progress status line to request cancellation. Wait for the operation result;
+the cancellation acknowledgement alone does not prove restoration. If the result
+is uncertain, inspect pending transactions with **p** on Dashboard before another
+change. See [the operating guide](docs/usage.md#physical-uplink-and-global-vpn-chain).
+
 DHCP client/server configuration and live Wi-Fi password changes use interface
 confirmation. Standalone VPN enable/disable, connect/disconnect and traffic
 policy changes use router confirmation. DHCP lease refresh, Wi-Fi
@@ -504,8 +510,10 @@ sharing rule through the wired uplink. For a Wi-Fi uplink and local AP, use sepa
 1. In **Interfaces**, edit the Wi-Fi input, select **Router role → Input + Output**,
    then Apply and Commit. The driver must advertise simultaneous station + AP support.
 2. Connect the input to the upstream network in **Wi-Fi**.
-3. The new `ap…` interface appears in **Interfaces**. Assign it a managed **Output**
-   role, Apply and Commit, then configure its SSID, password, LAN subnet and DHCP in **Wi-Fi**.
+3. The new `ap…` interface appears in **Interfaces** and defaults to a managed
+   **Output**. Configure its SSID, password, LAN subnet and DHCP in **Wi-Fi**.
+   Explicit saved child settings, including unmanaged or suppressed settings,
+   take precedence; check the child's effective configuration if it is not managed.
 4. Add the sharing rule from that output to the Wi-Fi input in **Route**.
 
 The AP follows the upstream channel at 20 MHz width and waits for the upstream

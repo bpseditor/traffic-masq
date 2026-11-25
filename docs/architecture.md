@@ -309,6 +309,11 @@ removal-only cleanup wait for that outcome. The production executor shares the
 reservation across router and VPN backends, including rebuilt VPN hop adapters.
 Private state directory creation syncs the directory and its ancestors, including
 on retries after a failed sync, before a caller can rely on durable records.
+`atomic-file::create_new` writes and syncs a temporary file, publishes it with a
+hard link that refuses an existing destination, removes the temporary name, then
+syncs the parent directory. A failure after publication can leave the destination
+present; an error alone does not prove absence. Fresh installer/config files and
+TUI log exports use this primitive; intentional replacement uses `replace`.
 
 DHCP client configuration edits only DHCP policy on an already
 managed input interface without a static address. Readiness requires a Bound
