@@ -10,7 +10,7 @@ async fn cancelled_caller_does_not_cancel_operation_and_shutdown_waits() {
         let operations = operations.clone();
         tokio::spawn(async move {
             operations
-                .run(async move {
+                .run(None, async move {
                     started_tx.send(()).unwrap();
                     finish_rx.await.unwrap();
                     done_tx.send(()).unwrap();
@@ -30,7 +30,7 @@ async fn cancelled_caller_does_not_cancel_operation_and_shutdown_waits() {
     finish_tx.send(()).unwrap();
     shutdown.await.unwrap();
     done_rx.await.unwrap();
-    assert!(operations.run(async {}).await.is_err());
+    assert!(operations.run(None, async {}).await.is_err());
 }
 
 #[tokio::test]
@@ -45,7 +45,7 @@ async fn saturated_executor_rejects_more_work() {
         let started = started_tx.clone();
         callers.spawn(async move {
             operations
-                .run(async move {
+                .run(None, async move {
                     started.send(()).unwrap();
                     let _permit = gate.acquire().await.unwrap();
                 })
@@ -57,7 +57,7 @@ async fn saturated_executor_rejects_more_work() {
         started_rx.recv().await.unwrap();
     }
     assert!(operations
-        .run(async {})
+        .run(None, async {})
         .await
         .unwrap_err()
         .to_string()
@@ -77,7 +77,7 @@ async fn shutdown_cancels_stalled_operations_after_the_drain_deadline() {
         let operations = operations.clone();
         async move {
             operations
-                .run(async move {
+                .run(None, async move {
                     started_tx.send(()).unwrap();
                     std::future::pending::<()>().await;
                 })
@@ -93,7 +93,7 @@ async fn shutdown_cancels_stalled_operations_after_the_drain_deadline() {
     .unwrap();
     assert!(caller.await.unwrap().is_err());
     operations.close().await;
-    assert!(operations.run(async {}).await.is_err());
+    assert!(operations.run(None, async {}).await.is_err());
 }
 
 #[tokio::test]
@@ -105,7 +105,7 @@ async fn explicit_cancel_survives_caller_disconnect_and_rejects_reused_ids() {
         let operations = operations.clone();
         async move {
             operations
-                .run_cancellable("selected-apply".into(), async move {
+                .run(Some("selected-apply".into()), async move {
                     started_tx.send(()).unwrap();
                     crate::core::mutation::cancellation_requested().await;
                     finished_tx.send(()).unwrap();
@@ -120,11 +120,11 @@ async fn explicit_cancel_survives_caller_disconnect_and_rejects_reused_ids() {
     operations.cancel("selected-apply").await.unwrap();
     finished_rx.await.unwrap();
     assert!(operations
-        .run_cancellable("selected-apply".into(), async {})
+        .run(Some("selected-apply".into()), async {})
         .await
         .is_err());
     assert!(operations
-        .run_cancellable("next-apply".into(), async { 42 })
+        .run(Some("next-apply".into()), async { 42 })
         .await
         .is_ok());
     operations.close().await;
@@ -134,7 +134,7 @@ async fn explicit_cancel_survives_caller_disconnect_and_rejects_reused_ids() {
 async fn finished_operation_rejects_cancel_even_if_a_worker_keeps_its_receiver() {
     let operations = Operations::default();
     let receiver = operations
-        .run_cancellable("completed-apply".into(), async {
+        .run(Some("completed-apply".into()), async {
             crate::core::mutation::current_cancellation().unwrap()
         })
         .await

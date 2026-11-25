@@ -46,14 +46,8 @@ Find the corresponding input and rendering code through the
 
 ## Explicit cancellation preserves coordinator ownership
 
-`api::operations` tracks non-reusable client operation identities. Administrative
-cancellation signals in `core::mutation` bypass waiting for admission but never
-execute network writes. Interface and router coordinators observe them only at
-compensatable apply boundaries; transport disconnection remains independent.
-See the [cancellation contract](change-safety.md#runtime-ownership-and-cancellation)
-and operation, admission and coordinator cancellation regression tests.
-
-Paired AP defaults are derived in runtime configuration after explicit and tentative
-intent, without changing stored schemas or enabling services. Child convergence
-verifies virtual-link ownership before mutation. Desired-state and override tests
-cover parent withdrawal, explicit child settings and suppression.
+`api::operations` tracks cancellation identities; `core::mutation` carries the signal.
+Existing coordinators retain compensation. Paired AP defaults are resolved after
+explicit/tentative intent in `state::overrides` and `core::desired`.
+See [the contract](change-safety.md#runtime-ownership-and-cancellation) and
+[architecture](architecture.md#applying-changes) for invariants and entry points.

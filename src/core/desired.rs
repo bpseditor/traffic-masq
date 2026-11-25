@@ -427,7 +427,12 @@ impl DesiredNetworkState {
         let tentative = self.tentative.lock().await;
         let snapshot = self.overrides.snapshot().await;
         let mut effective = snapshot.effective_config(&self.base)?;
-        effective.network = snapshot.explicit_network(&self.base.network)?;
+        // Keep explicit entries from the validated committed network; derive
+        // paired outputs again only after tentative intent has been applied.
+        effective.network.interfaces.retain(|name, _| {
+            self.base.network.interfaces.contains_key(name)
+                || snapshot.interfaces.contains_key(name)
+        });
         for (interface, pending) in tentative.iter() {
             effective
                 .network

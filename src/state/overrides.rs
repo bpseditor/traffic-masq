@@ -299,7 +299,7 @@ impl RuntimeOverrides {
         Ok(effective)
     }
 
-    pub(crate) fn explicit_network(&self, base: &NetworkConfig) -> Result<NetworkConfig> {
+    fn explicit_network(&self, base: &NetworkConfig) -> Result<NetworkConfig> {
         self.validate_suppression()?;
         let mut effective = base.clone();
         effective

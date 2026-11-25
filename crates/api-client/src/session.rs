@@ -89,12 +89,6 @@ impl<Response: serde::de::DeserializeOwned> ApiClient<Response> {
         client
     }
 
-    pub fn has_cancellable_operation(&self) -> bool {
-        self.cancellation
-            .as_ref()
-            .is_some_and(|slot| slot.lock().unwrap().is_some())
-    }
-
     pub async fn cancel_current_operation(&self) -> Result<bool> {
         let id = self
             .cancellation

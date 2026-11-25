@@ -388,10 +388,7 @@ impl ControlService {
                 })
                 .await
         };
-        let result = match operation_id {
-            Some(id) => self.operations.run_cancellable(id, operation).await,
-            None => self.operations.run(operation).await,
-        };
+        let result = self.operations.run(operation_id, operation).await;
         match result {
             Ok(response) => response,
             Err(error) => runtime::error_response(error),

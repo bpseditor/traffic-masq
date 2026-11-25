@@ -239,7 +239,7 @@ pub(super) enum DhcpReconcileAction {
 
 /// Each worker reports transitions immediately and summarizes persistent failures.
 #[derive(Default)]
-struct ConvergenceLog {
+pub(super) struct ConvergenceLog {
     last: Option<(String, time::Instant, u64)>,
 }
 
@@ -1366,29 +1366,13 @@ pub(super) fn spawn_runtime_network_reconcile_with_recovery_events(
 /// One pass of "is everything we spawned still running".
 ///
 /// Split from the task that drives it so it can be exercised against fakes.
-#[cfg(test)]
 pub(super) async fn check_process_liveness<D, W, C, L>(
     desired_config: Option<&AppConfig>,
     dhcp: Option<&D>,
     wifi: Option<&W>,
     wifi_client: Option<&C>,
     dhcp_client: Option<&L>,
-) where
-    D: DhcpRuntimeReconciler,
-    W: WifiRuntimeReconciler,
-    C: WifiRuntimeReconciler,
-    L: DhcpClientRuntimeReconciler,
-{
-    check_process_liveness_logged(desired_config, dhcp, wifi, wifi_client, dhcp_client, None).await;
-}
-
-async fn check_process_liveness_logged<D, W, C, L>(
-    desired_config: Option<&AppConfig>,
-    dhcp: Option<&D>,
-    wifi: Option<&W>,
-    wifi_client: Option<&C>,
-    dhcp_client: Option<&L>,
-    mut logs: Option<&mut std::collections::HashMap<String, ConvergenceLog>>,
+    logs: &mut std::collections::HashMap<String, ConvergenceLog>,
 ) where
     D: DhcpRuntimeReconciler,
     W: WifiRuntimeReconciler,
@@ -1448,13 +1432,9 @@ async fn check_process_liveness_logged<D, W, C, L>(
                 let report = |error: &anyhow::Error| {
                     tracing::warn!(%interface, error = %format!("{error:#}"), "DHCP client liveness reconcile failed");
                 };
-                if let Some(logs) = logs.as_deref_mut() {
-                    logs.entry(interface.clone())
-                        .or_default()
-                        .report_with(&result, report);
-                } else if let Err(error) = &result {
-                    report(error);
-                }
+                logs.entry(interface.clone())
+                    .or_default()
+                    .report_with(&result, report);
             }
         }
     }
@@ -1601,13 +1581,13 @@ pub(super) fn spawn_process_liveness_checks(
                         };
                     // Drop retired interfaces so log state cannot grow with old intent.
                     dhcp_logs.retain(|name, _| config.network.interfaces.contains_key(name));
-                    check_process_liveness_logged(
+                    check_process_liveness(
                         Some(&config),
                         shared_dhcp_allowed.then_some(&dhcp),
                         wifi.as_ref().filter(|_| wifi_admitted),
                         wifi_client.as_ref().filter(|_| wifi_admitted),
                         Some(&dhcp_client),
-                        Some(&mut dhcp_logs),
+                        &mut dhcp_logs,
                     )
                     .await;
                 }

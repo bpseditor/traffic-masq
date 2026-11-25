@@ -298,7 +298,14 @@ fn refreshing_preserves_footer_notification_and_does_not_flash_for_fast_reads() 
 
         terminal
             .draw(|frame| {
-                render_operation_snapshot(frame, &snapshot, None, Duration::from_millis(100), true);
+                render_operation_snapshot(
+                    frame,
+                    &snapshot,
+                    None,
+                    Duration::from_millis(100),
+                    true,
+                    None,
+                );
             })
             .unwrap();
         assert_eq!(terminal.backend().buffer(), &snapshot);
@@ -312,6 +319,7 @@ fn refreshing_preserves_footer_notification_and_does_not_flash_for_fast_reads() 
                         None,
                         Duration::from_secs(2),
                         cancellable,
+                        None,
                     );
                 })
                 .unwrap();
@@ -350,7 +358,7 @@ fn operation_snapshot_redraws_safely_after_terminal_resize() {
     let mut resized = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
     resized
         .draw(|frame| {
-            render_operation_snapshot(frame, &snapshot, None, Duration::from_secs(2), false);
+            render_operation_snapshot(frame, &snapshot, None, Duration::from_secs(2), false, None);
         })
         .unwrap();
     let rendered = resized
@@ -1449,9 +1457,18 @@ fn applying_cancel_accepts_escape_and_only_the_visible_status_mouse_target() {
                     None,
                     Duration::from_secs(2),
                     false,
+                    Some("Cancellation requested"),
                 );
             })
             .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.contains("Cancellation requested"));
         if width < 80 || height < 24 {
             assert!(target.is_none());
         } else {

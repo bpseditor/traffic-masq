@@ -1038,6 +1038,7 @@ async fn liveness_checks_the_wifi_client_independently_of_the_access_point() {
         None::<&FakeWifiReconciler>,
         Some(&wifi_client),
         None::<&FakeDhcpClientReconciler>,
+        &mut Default::default(),
     )
     .await;
 
@@ -1058,6 +1059,7 @@ async fn liveness_covers_every_supervised_runtime() {
         Some(&wifi),
         Some(&wifi_client),
         Some(&dhcp_client),
+        &mut Default::default(),
     )
     .await;
 
@@ -1102,6 +1104,7 @@ async fn liveness_resynchronizes_wifi_association_into_dhcp_link_ready() {
         None::<&FakeWifiReconciler>,
         Some(&wifi_client),
         Some(&dhcp_client),
+        &mut Default::default(),
     )
     .await;
 
@@ -2472,6 +2475,7 @@ async fn liveness_does_not_replay_dhcp_association_from_withdrawn_desired_policy
         None::<&FakeWifiReconciler>,
         Some(&wifi),
         Some(&client),
+        &mut Default::default(),
     )
     .await;
     assert!(client.readiness.lock().await.is_empty());

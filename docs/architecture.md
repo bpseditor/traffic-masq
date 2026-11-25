@@ -197,7 +197,9 @@ current intent after acquiring their lane, and in-flight kernel/process writes
 are drained before global errors are returned. Autonomous background writers
 (such as supervised-process liveness repair) take exclusive runtime execution so
 they cannot replay stale state across a convergence pass. Accepted control
-operations keep running if the HTTP client disconnects. The executor
+operations keep running if the HTTP client disconnects. Explicit cancellation is
+tracked in `api::operations` and observed through `core::mutation` by the existing
+interface/router compensation owners; see [the cancellation contract](change-safety.md#runtime-ownership-and-cancellation). The executor
 limits queued work and waits up to 30 seconds for accepted operations during
 shutdown, then cancels remaining tasks while retaining unresolved recovery
 journals. In-flight storage and runtime workers retain their reservations until
@@ -309,7 +311,9 @@ Private state directory creation syncs the directory and its ancestors, includin
 on retries after a failed sync, before a caller can rely on durable records.
 
 DHCP client configuration edits only DHCP policy on an already
-managed input interface without a static address. Interface role, management
+managed input interface without a static address. Readiness requires a Bound
+lease and exact kernel resources; remembered suspended leases are not ready.
+Repeated per-interface liveness failures use transition and summary logging. Interface role, management
 and static-address changes must pass through interface transactions first.
 Runtime interface and router dataplane convergence retry unsuccessful passes
 with exponential backoff from one to thirty seconds. Kernel notifications are
@@ -320,8 +324,12 @@ checked before a repair journal is opened, leaving healthy LAN services intact.
 
 Wi-Fi radio admission rejects AP/STA sharing a PHY unless the input explicitly
 sets `wifi_concurrent = true` and the AP uses its derived virtual interface name.
-The physical input retains its input role; the virtual AP has its own output
-configuration, subnet and DHCP service. The legacy combined router provisioning
+The physical input retains its input role. An unconfigured virtual AP derives
+managed Output intent without IPv4 or services; explicit child settings and
+suppression take precedence. Derivation follows tentative edits in `core::desired`
+and does not change stored schemas. Older readers do not derive this default.
+Convergence verifies AP ownership before writing the link. Configure its subnet,
+AP and DHCP service separately. The legacy combined router provisioning
 request still requires separate radios; Input + Output is enabled through the
 interface transaction flow before configuring the AP and forwarding rule.
 The editor probes nl80211 through `GetInterfaceConfig` and offers the combined
@@ -404,24 +412,3 @@ use protocol 201. Each owner restores its own namespace; old route snapshots
 containing policy-table entries cannot replay obsolete VPN ifindices. Committed
 standalone intent bypasses legacy immediate startup/integrity writers and is
 repaired under the router journal.
-
-### Operator cancellation and paired output intent
-
-Tracked cancellable requests live in `api::operations`; their task-local signal is
-in `core::mutation`. Interface apply observes it while waiting for convergence;
-router apply/repair observes it under its existing journal guard. Both use ordinary
-failed-apply compensation. Transport loss does not signal cancellation. The TUI
-keeps the original request alive while sending the explicit signal separately.
-
-Runtime configuration derives an otherwise unconfigured paired AP as a managed
-output without IPv4, DHCP or Wi-Fi services. Explicit child settings and suppression
-take precedence. `state::overrides::explicit_network` retains the saved layer;
-`core::desired` derives outputs after tentative edits so rollback and parent withdrawal
-remove only derived intent. Before writing a paired link, convergence verifies the
-owned AP identity. Derivation does not authorize adoption of a foreign same-name link.
-No persisted schema changes; older readers do not derive these unconfigured outputs.
-
-DHCP shared lease memory can contain a suspended lease for INIT-REBOOT. Readiness
-waits for `Bound` before checking exact kernel resources; suspended memory is not
-installed state. Process liveness summarizes repeated per-interface DHCP failures,
-retaining immediate transition and recovery messages.

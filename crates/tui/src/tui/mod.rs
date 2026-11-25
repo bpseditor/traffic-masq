@@ -829,16 +829,8 @@ async fn drive_ui(
                 if should_render {
                     terminal.draw(|frame| {
                         cancel_target = render_operation_snapshot(
-                            frame, &snapshot, deadline, elapsed, cancellable,
+                            frame, &snapshot, deadline, elapsed, cancellable, cancel_status.as_deref(),
                         );
-                        if let Some(message) = &cancel_status {
-                            let area = frame.area();
-                            if area.width >= 80 && area.height >= 24 {
-                                let banner = ratatui::layout::Rect::new(area.x + 1, area.y + area.height - 3, area.width - 2, 1);
-                                frame.render_widget(ratatui::widgets::Clear, banner);
-                                frame.render_widget(Paragraph::new(message.as_str()), banner);
-                            }
-                        }
                     })?;
                 }
                 while event::poll(Duration::ZERO)? {
@@ -882,6 +874,7 @@ fn render_operation_snapshot(
     deadline: Option<u64>,
     elapsed: Duration,
     cancellable: bool,
+    status: Option<&str>,
 ) -> Option<ratatui::layout::Rect> {
     let area = frame.area();
     if area == snapshot.area {
@@ -899,7 +892,7 @@ fn render_operation_snapshot(
             "Applying changes… Esc: request cancel; Q: exit after result"
         };
         frame.render_widget(
-            Paragraph::new(message)
+            Paragraph::new(status.unwrap_or(message))
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(theme::WARN)),
             area,
@@ -934,7 +927,7 @@ fn render_operation_snapshot(
         ratatui::layout::Rect::new(area.x + 1, area.y + area.height - 3, area.width - 2, 1);
     frame.render_widget(ratatui::widgets::Clear, banner);
     frame.render_widget(
-        Paragraph::new(message).style(Style::default().fg(theme::MUTED)),
+        Paragraph::new(status.unwrap_or(&message)).style(Style::default().fg(theme::MUTED)),
         banner,
     );
     (!cancellable).then_some(banner.intersection(area))

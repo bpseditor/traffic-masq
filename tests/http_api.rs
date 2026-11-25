@@ -3055,10 +3055,8 @@ async fn client_cancels_active_apply_over_a_separate_connection_without_replayin
             .await
     });
     ready.await?;
-    assert!(client.has_cancellable_operation());
     assert!(client.cancel_current_operation().await?);
     assert!(matches!(original.await??, Response::Pong));
-    assert!(!client.has_cancellable_operation());
     assert!(!client.cancel_current_operation().await?);
     server.await??;
     Ok(())
