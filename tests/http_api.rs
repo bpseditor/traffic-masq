@@ -2989,3 +2989,77 @@ async fn commit_http_vpn(client: &ApiClient, request: &Request) -> Result<()> {
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn client_cancels_active_apply_over_a_separate_connection_without_replaying_it() -> Result<()>
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    async fn body(stream: &mut tokio::net::UnixStream) -> Result<serde_json::Value> {
+        let mut bytes = Vec::new();
+        loop {
+            if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                let headers = std::str::from_utf8(&bytes[..end])?;
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse().unwrap())
+                    })
+                    .unwrap();
+                if bytes.len() >= end + 4 + length {
+                    return Ok(serde_json::from_slice(&bytes[end + 4..end + 4 + length])?);
+                }
+            }
+            let mut chunk = [0; 4096];
+            let count = stream.read(&mut chunk).await?;
+            anyhow::ensure!(count != 0 && bytes.len() < 65536, "incomplete HTTP request");
+            bytes.extend_from_slice(&chunk[..count]);
+        }
+    }
+    async fn respond(stream: &mut tokio::net::UnixStream, value: serde_json::Value) -> Result<()> {
+        let body = serde_json::to_vec(&value)?;
+        let headers = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+        stream.write_all(headers.as_bytes()).await?;
+        stream.write_all(&body).await?;
+        Ok(())
+    }
+    let directory = tempdir()?;
+    let path = directory.path().join("control.sock");
+    let listener = tokio::net::UnixListener::bind(&path)?;
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut original, _) = listener.accept().await?;
+        let request = body(&mut original).await?;
+        assert_eq!(request["type"], "run_operation");
+        assert_eq!(request["request"]["type"], "vpn_deactivate");
+        let id = request["operation_id"].clone();
+        started.send(()).unwrap();
+        let (mut cancellation, _) = listener.accept().await?;
+        let cancel = body(&mut cancellation).await?;
+        assert_eq!(cancel["type"], "cancel_operation");
+        assert_eq!(cancel["operation_id"], id);
+        respond(
+            &mut cancellation,
+            serde_json::json!({"type":"operation_cancellation_requested", "operation_id":id}),
+        )
+        .await?;
+        respond(&mut original, serde_json::json!({"type":"pong"})).await?;
+        Ok::<_, anyhow::Error>(())
+    });
+    let client = ApiClient::new(&path).cancellable();
+    let worker = client.clone();
+    let original = tokio::spawn(async move {
+        worker
+            .request(&traffic_masq_protocol::ControlRequest::VpnDeactivate)
+            .await
+    });
+    ready.await?;
+    assert!(client.has_cancellable_operation());
+    assert!(client.cancel_current_operation().await?);
+    assert!(matches!(original.await??, Response::Pong));
+    assert!(!client.has_cancellable_operation());
+    assert!(!client.cancel_current_operation().await?);
+    server.await??;
+    Ok(())
+}
