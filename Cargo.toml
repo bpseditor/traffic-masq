@@ -37,20 +37,20 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "server", "service", "tokio"] }
 ipnet = { version = "2", features = ["serde"] }
-nix = { version = "0.31", features = ["fs", "net", "process", "signal", "socket", "uio", "user"] }
-pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+nix = { version = "0.32", features = ["fs", "net", "process", "signal", "socket", "uio", "user"] }
+pbkdf2 = { version = "0.13", default-features = false, features = ["hmac"] }
 rand = "0.10"
 rpassword = "7"
 rustls = "0.23.45"
 rustls-pemfile = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha1 = "0.10"
+sha1 = "0.11"
 sha2 = "0.11"
 socket2 = "0.6"
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite"] }
 thiserror = "1"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1.54.1", features = ["full"] }
 tokio-rustls = "0.26"
 toml = "1.1"
 tower = "0.5"

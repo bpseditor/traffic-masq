@@ -265,7 +265,9 @@ impl LinuxArpSocket {
                 .context("failed to bind ARP packet socket to interface");
         }
         Ok(Self(
-            AsyncFd::new(fd).context("failed to register ARP packet socket")?,
+            // SAFETY: AsyncFd owns this nonblocking OwnedFd; it is never closed
+            // or replaced while registered.
+            unsafe { AsyncFd::register(fd) }.context("failed to register ARP packet socket")?,
         ))
     }
 }
@@ -607,8 +609,12 @@ impl LinuxDhcpClientSocket {
         })?;
         let packet_fd = packet_socket(config.interface_index)?;
         Ok(Self {
-            udp_socket: AsyncFd::new(fd).context("failed to register DHCP client UDP socket")?,
-            packet_socket: AsyncFd::new(packet_fd)
+            // SAFETY: Each AsyncFd owns its nonblocking OwnedFd; neither is
+            // closed or replaced while registered.
+            udp_socket: unsafe { AsyncFd::register(fd) }
+                .context("failed to register DHCP client UDP socket")?,
+            // SAFETY: Same ownership and descriptor lifetime as the UDP socket.
+            packet_socket: unsafe { AsyncFd::register(packet_fd) }
                 .context("failed to register DHCP client packet socket")?,
             config,
         })

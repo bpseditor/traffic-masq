@@ -301,7 +301,10 @@ impl SharedDhcpRuntime {
             ))
         })?;
         Ok(Self {
-            socket: AsyncFd::new(fd).context("failed to register shared DHCP socket")?,
+            // SAFETY: AsyncFd owns this nonblocking OwnedFd; it is never closed
+            // or replaced while registered.
+            socket: unsafe { AsyncFd::register(fd) }
+                .context("failed to register shared DHCP socket")?,
             services,
             config,
         })
