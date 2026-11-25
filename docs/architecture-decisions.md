@@ -43,3 +43,17 @@ input and share admission with typed control. The same refactor grouped
 confirmation, DHCP and Wi-Fi UI state in [TUI state](../crates/tui/src/tui/state.rs).
 Find the corresponding input and rendering code through the
 [TUI file map](../crates/tui/src/tui/README.md#2-directory--component-inventory).
+
+## Explicit cancellation preserves coordinator ownership
+
+`api::operations` tracks non-reusable client operation identities. Administrative
+cancellation signals in `core::mutation` bypass waiting for admission but never
+execute network writes. Interface and router coordinators observe them only at
+compensatable apply boundaries; transport disconnection remains independent.
+See the [cancellation contract](change-safety.md#runtime-ownership-and-cancellation)
+and operation, admission and coordinator cancellation regression tests.
+
+Paired AP defaults are derived in runtime configuration after explicit and tentative
+intent, without changing stored schemas or enabling services. Child convergence
+verifies virtual-link ownership before mutation. Desired-state and override tests
+cover parent withdrawal, explicit child settings and suppression.

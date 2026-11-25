@@ -404,3 +404,24 @@ use protocol 201. Each owner restores its own namespace; old route snapshots
 containing policy-table entries cannot replay obsolete VPN ifindices. Committed
 standalone intent bypasses legacy immediate startup/integrity writers and is
 repaired under the router journal.
+
+### Operator cancellation and paired output intent
+
+Tracked cancellable requests live in `api::operations`; their task-local signal is
+in `core::mutation`. Interface apply observes it while waiting for convergence;
+router apply/repair observes it under its existing journal guard. Both use ordinary
+failed-apply compensation. Transport loss does not signal cancellation. The TUI
+keeps the original request alive while sending the explicit signal separately.
+
+Runtime configuration derives an otherwise unconfigured paired AP as a managed
+output without IPv4, DHCP or Wi-Fi services. Explicit child settings and suppression
+take precedence. `state::overrides::explicit_network` retains the saved layer;
+`core::desired` derives outputs after tentative edits so rollback and parent withdrawal
+remove only derived intent. Before writing a paired link, convergence verifies the
+owned AP identity. Derivation does not authorize adoption of a foreign same-name link.
+No persisted schema changes; older readers do not derive these unconfigured outputs.
+
+DHCP shared lease memory can contain a suspended lease for INIT-REBOOT. Readiness
+waits for `Bound` before checking exact kernel resources; suspended memory is not
+installed state. Process liveness summarizes repeated per-interface DHCP failures,
+retaining immediate transition and recovery messages.

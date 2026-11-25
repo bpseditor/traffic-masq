@@ -120,6 +120,15 @@ On shutdown, stop admission, drain accepted operations within the shutdown
 budget, then cancel remaining tasks while preserving unresolved journals and
 worker reservations. Client disconnection must not cancel an accepted operation.
 
+Explicit operator cancellation is distinct from caller disconnection. The
+`run_operation` envelope preserves the nested request policy; the administrative
+`cancel_operation` signal does not wait for mutation admission or perform runtime
+writes. The operation owner observes it before admission or during transactional
+apply/repair, and completes the existing failed-apply compensation path. Cancellation
+acknowledgement is not restoration proof. Confirmation, rollback and blocking
+workers are not interrupted by this signal. If completion races cancellation,
+clients inspect the original result and current/pending state before another write.
+
 ## Durable evidence and compatibility
 
 Use the shared [atomic-file primitives](../crates/atomic-file/src/lib.rs) for

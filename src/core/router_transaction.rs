@@ -350,12 +350,14 @@ impl RouterTransactionCoordinator {
             .await?;
         let applied = match preparation {
             Ok(guard) => {
-                let result = match tokio::time::timeout(
-                    recovery_control::ATTEMPT_TIMEOUT,
-                    self.inner.manager.apply_transaction(&plan.plan),
-                )
-                .await
-                {
+                let result = match tokio::select! {
+                    biased;
+                    () = crate::core::mutation::cancellation_requested() => Ok(Err(anyhow::anyhow!("router apply cancelled by operator"))),
+                    result = tokio::time::timeout(
+                        recovery_control::ATTEMPT_TIMEOUT,
+                        self.inner.manager.apply_transaction(&plan.plan),
+                    ) => result,
+                } {
                     Ok(result) => result,
                     Err(_) => Err(recovery_control::failure(
                         recovery_control::FailureKind::Transient,
@@ -651,14 +653,17 @@ impl RouterTransactionCoordinator {
                         }
                     }
                 };
-                let result =
-                    match tokio::time::timeout(recovery_control::ATTEMPT_TIMEOUT, work).await {
-                        Ok(result) => result,
-                        Err(_) => Err(recovery_control::failure(
-                            recovery_control::FailureKind::Transient,
-                            "router repair timed out; runtime outcome must be re-observed",
-                        )),
-                    };
+                let result = match tokio::select! {
+                    biased;
+                    () = crate::core::mutation::cancellation_requested() => Ok(Err(anyhow::anyhow!("router repair cancelled by operator"))),
+                    result = tokio::time::timeout(recovery_control::ATTEMPT_TIMEOUT, work) => result,
+                } {
+                    Ok(result) => result,
+                    Err(_) => Err(recovery_control::failure(
+                        recovery_control::FailureKind::Transient,
+                        "router repair timed out; runtime outcome must be re-observed",
+                    )),
+                };
                 match guard.finish().await {
                     Ok(()) => result,
                     Err(error) => Err(error),

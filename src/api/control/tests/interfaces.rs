@@ -486,3 +486,58 @@ async fn internal_profile_activation_restores_runtime_and_secret_on_persistence_
     );
     assert_eq!(fixture.service.overrides.committed_revision().await, 0);
 }
+
+#[tokio::test]
+async fn explicit_cancellation_bypasses_busy_admission_without_applying_queued_request() {
+    let fixture = dhcp_client_control_fixture(false).await;
+    let gate = fixture.service.network_mutations.clone();
+    let admission = gate.admit().await;
+    let worker = fixture.service.clone();
+    let applying = tokio::spawn(async move {
+        worker
+            .dispatch(Request::RunOperation {
+                operation_id: "queued-dhcp".into(),
+                request: Box::new(Request::ConfigureDhcpClient {
+                    interface: "wan0".into(),
+                    config: DhcpClientConfigRequest::default(),
+                }),
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if matches!(
+                fixture
+                    .service
+                    .dispatch(Request::CancelOperation {
+                        operation_id: "queued-dhcp".into()
+                    })
+                    .await,
+                Response::OperationCancellationRequested { .. }
+            ) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancel must not queue behind apply admission");
+    let response = tokio::time::timeout(Duration::from_secs(5), applying)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(response, Response::Error { message } if message.contains("cancelled before admission"))
+    );
+    assert_eq!(fixture.overrides.committed_revision().await, 0);
+    drop(admission);
+    let reopened =
+        RuntimeOverrideManager::load(fixture.directory.path(), &fixture.service.base_config)
+            .await
+            .unwrap();
+    assert_eq!(reopened.committed_revision().await, 0);
+    assert!(matches!(
+        fixture.service.dispatch(Request::Ping).await,
+        Response::Pong
+    ));
+}

@@ -245,6 +245,10 @@ struct ConvergenceLog {
 
 impl ConvergenceLog {
     fn report(&mut self, result: &Result<()>) {
+        self.report_with(result, log_router_dataplane_convergence_error);
+    }
+
+    fn report_with(&mut self, result: &Result<()>, first: impl FnOnce(&anyhow::Error)) {
         let Err(error) = result else {
             if let Some((_, _, suppressed)) = self.last.take() {
                 tracing::info!(suppressed, "network convergence recovered");
@@ -266,7 +270,7 @@ impl ConvergenceLog {
                 return;
             }
         }
-        log_router_dataplane_convergence_error(error);
+        first(error);
         self.last = Some((key, now, 0));
     }
 }
@@ -684,6 +688,11 @@ async fn reconcile_interface_runtime_once(
             // Canceling it restores configuration, not the availability of an
             // external Wi-Fi network or DHCP server.
             let restoring = restorations.contains_key(name);
+            if let Some(parent) = crate::wifi::concurrent::parent_for(&effective.network, name) {
+                // A derived managed output is intent, not permission to adopt
+                // an unrelated link occupying its name. Verify before any writer.
+                crate::wifi::concurrent::ensure_ap(desired.state_dir(), parent).await?;
+            }
             if config.wifi_concurrent {
                 crate::wifi::concurrent::ensure_ap(desired.state_dir(), name).await?;
             } else if crate::wifi::concurrent::has_record(desired.state_dir(), name).await? {
@@ -910,7 +919,7 @@ async fn reconcile_interface_runtime_once(
                 true
             };
             if config.wifi_client.is_some() {
-                crate::logging::operation::stage(
+                crate::core::mutation::cancellable_wait(crate::logging::operation::stage(
                     "wait_association",
                     Some(crate::wifi::client::ASSOCIATION_READY_TIMEOUT),
                     async {
@@ -935,7 +944,7 @@ async fn reconcile_interface_runtime_once(
                         }
                         Ok(())
                     },
-                )
+                ))
                 .await?;
             }
             ensure_current()?;
@@ -1037,11 +1046,11 @@ async fn reconcile_interface_runtime_once(
                 && DhcpClientSpec::from_interface_config(name, config)?.is_some()
             {
                 if let Some(client) = dhcp_client {
-                    crate::logging::operation::stage(
+                    crate::core::mutation::cancellable_wait(crate::logging::operation::stage(
                         "wait_dhcp",
                         Some(crate::dhcp::client::supervisor::LEASE_READY_TIMEOUT),
                         client.verify_ready(name),
-                    )
+                    ))
                     .await?;
                 }
             }
@@ -1128,7 +1137,12 @@ async fn reconcile_interface_runtime_once(
         }
         result
     };
-    let outcome = diagnostic.scope(work).await;
+    let outcome = match desired.cancellation_for(name).await {
+        Some(cancelled) => {
+            crate::core::mutation::cancellation_scope(cancelled, diagnostic.scope(work)).await
+        }
+        None => diagnostic.scope(work).await,
+    };
     if desired.interface_revision(name) != revision {
         return (version, None);
     }
@@ -1352,12 +1366,29 @@ pub(super) fn spawn_runtime_network_reconcile_with_recovery_events(
 /// One pass of "is everything we spawned still running".
 ///
 /// Split from the task that drives it so it can be exercised against fakes.
+#[cfg(test)]
 pub(super) async fn check_process_liveness<D, W, C, L>(
     desired_config: Option<&AppConfig>,
     dhcp: Option<&D>,
     wifi: Option<&W>,
     wifi_client: Option<&C>,
     dhcp_client: Option<&L>,
+) where
+    D: DhcpRuntimeReconciler,
+    W: WifiRuntimeReconciler,
+    C: WifiRuntimeReconciler,
+    L: DhcpClientRuntimeReconciler,
+{
+    check_process_liveness_logged(desired_config, dhcp, wifi, wifi_client, dhcp_client, None).await;
+}
+
+async fn check_process_liveness_logged<D, W, C, L>(
+    desired_config: Option<&AppConfig>,
+    dhcp: Option<&D>,
+    wifi: Option<&W>,
+    wifi_client: Option<&C>,
+    dhcp_client: Option<&L>,
+    mut logs: Option<&mut std::collections::HashMap<String, ConvergenceLog>>,
 ) where
     D: DhcpRuntimeReconciler,
     W: WifiRuntimeReconciler,
@@ -1412,8 +1443,17 @@ pub(super) async fn check_process_liveness<D, W, C, L>(
                 None => wifi_client.association_ready(&spec.interface).await,
             };
             if let Some(link_ready) = link_ready {
-                if let Err(error) = dhcp_client.reconcile(spec, link_ready).await {
-                    tracing::warn!(error = %format!("{error:#}"), "DHCP client liveness reconcile failed");
+                let interface = spec.interface.clone();
+                let result = dhcp_client.reconcile(spec, link_ready).await;
+                let report = |error: &anyhow::Error| {
+                    tracing::warn!(%interface, error = %format!("{error:#}"), "DHCP client liveness reconcile failed");
+                };
+                if let Some(logs) = logs.as_deref_mut() {
+                    logs.entry(interface.clone())
+                        .or_default()
+                        .report_with(&result, report);
+                } else if let Err(error) = &result {
+                    report(error);
                 }
             }
         }
@@ -1481,6 +1521,7 @@ pub(super) fn spawn_process_liveness_checks(
             .as_ref()
             .map(|wifi| wifi.subscribe_association_changes());
         let mut interval = time::interval(PROCESS_LIVENESS_INTERVAL);
+        let mut dhcp_logs = std::collections::HashMap::new();
         interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
         loop {
@@ -1558,12 +1599,15 @@ pub(super) fn spawn_process_liveness_checks(
                                 false
                             }
                         };
-                    check_process_liveness(
+                    // Drop retired interfaces so log state cannot grow with old intent.
+                    dhcp_logs.retain(|name, _| config.network.interfaces.contains_key(name));
+                    check_process_liveness_logged(
                         Some(&config),
                         shared_dhcp_allowed.then_some(&dhcp),
                         wifi.as_ref().filter(|_| wifi_admitted),
                         wifi_client.as_ref().filter(|_| wifi_admitted),
                         Some(&dhcp_client),
+                        Some(&mut dhcp_logs),
                     )
                     .await;
                 }

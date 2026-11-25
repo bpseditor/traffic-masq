@@ -108,5 +108,48 @@ impl NetworkMutationGate {
     }
 }
 
+// A cancellation request is independent of runtime locks. Only the operation
+// owner observes it at a compensatable boundary; storage workers keep running.
+tokio::task_local! {
+    static OPERATION_CANCELLATION: tokio::sync::watch::Receiver<bool>;
+}
+
+pub(crate) async fn cancellation_scope<T>(
+    receiver: tokio::sync::watch::Receiver<bool>,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    OPERATION_CANCELLATION.scope(receiver, future).await
+}
+
+pub(crate) async fn cancellation_requested() {
+    let Ok(mut receiver) = OPERATION_CANCELLATION.try_with(Clone::clone) else {
+        return std::future::pending::<()>().await;
+    };
+    loop {
+        if *receiver.borrow_and_update() {
+            return;
+        }
+        if receiver.changed().await.is_err() {
+            return std::future::pending::<()>().await;
+        }
+    }
+}
+
+pub(crate) fn current_cancellation() -> Option<tokio::sync::watch::Receiver<bool>> {
+    OPERATION_CANCELLATION.try_with(Clone::clone).ok()
+}
+
+/// Only observational readiness waits use this helper. Runtime/storage writes
+/// retain their own completion and ownership protocols.
+pub(crate) async fn cancellable_wait<T>(
+    future: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    tokio::select! {
+        biased;
+        () = cancellation_requested() => anyhow::bail!("operation cancelled by operator"),
+        result = future => result,
+    }
+}
+
 #[cfg(test)]
 mod tests;

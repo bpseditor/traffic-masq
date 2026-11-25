@@ -1490,3 +1490,31 @@ async fn readiness_reports_actor_exit_without_waiting_for_liveness_or_timeout() 
         .await
         .unwrap();
 }
+
+#[tokio::test(start_paused = true)]
+async fn readiness_waits_for_reconfirmed_suspended_lease() {
+    let state_dir = TempDir::new().unwrap();
+    let network = FakeNetwork::present(7).await;
+    let launcher = Arc::new(FakeLauncher::default());
+    let supervisor = supervisor_with(&state_dir, network.clone(), launcher.clone()).await;
+    launcher
+        .take_sink()
+        .lease_acquired(lease(Ipv4Addr::new(192, 0, 2, 42)))
+        .await
+        .unwrap();
+    supervisor.reconcile_with_link_ready(spec(), false).await;
+    supervisor.reconcile_with_link_ready(spec(), true).await;
+    assert!(network.addresses.lock().await.is_empty());
+    let mut sink = launcher.take_sink();
+    let acquisition = async {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        sink.lease_acquired(lease(Ipv4Addr::new(192, 0, 2, 42)))
+            .await
+            .unwrap();
+    };
+    let (ready, ()) = tokio::join!(supervisor.wait_until_ready("wan0"), acquisition);
+    ready.expect("suspended memory is not a failed bound lease");
+    let current = supervisor.status("wan0").await.unwrap().lease.unwrap();
+    assert_eq!(current.state, DhcpClientLeaseState::Bound);
+    supervisor.verify_bound_lease(&current).await.unwrap();
+}

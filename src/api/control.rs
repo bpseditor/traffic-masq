@@ -332,48 +332,67 @@ impl ControlService {
     /// Execute a control request through the tracked operation service so caller cancellation
     /// does not interrupt an accepted network mutation.
     pub async fn dispatch(&self, request: Request) -> Response {
+        let (operation_id, request) = match request {
+            Request::CancelOperation { operation_id } => {
+                return match self.operations.cancel(&operation_id).await {
+                    Ok(()) => Response::OperationCancellationRequested { operation_id },
+                    Err(error) => runtime::error_response(error),
+                };
+            }
+            Request::RunOperation {
+                operation_id,
+                request,
+            } => {
+                if !request.cancellable_apply() {
+                    return runtime::error_response("this request cannot be cancelled");
+                }
+                (Some(operation_id), *request)
+            }
+            request => (None, request),
+        };
         let service = self.clone();
         let diagnostic = crate::logging::operation::Operation::new("api", request.command_name());
         let log_operation = request.policy().long_running || request.policy().needs_admission();
         let interface = request.policy().recovery_interface.map(str::to_owned);
-        match self
-            .operations
-            .run(async move {
-                diagnostic
-                    .scope(async move {
-                        let started = std::time::Instant::now();
-                        if log_operation {
-                            tracing::info!(?interface, "control operation started");
-                        }
-                        let response = Box::pin(service.dispatch_inner(request)).await;
-                        let outcome = match &response {
-                            Response::Error { .. }
-                            | Response::DhcpClientError { .. }
-                            | Response::RouterError { .. }
-                            | Response::RouterProvisioningError { .. }
-                            | Response::VpnError { .. }
-                            | Response::VpnPolicyError { .. }
-                            | Response::WifiError { .. }
-                            | Response::WifiClientError { .. }
-                            | Response::WifiClientProfileError { .. } => "rejected",
-                            Response::NetworkChangePending { .. } => "awaiting_commit",
-                            Response::Unknown => "unknown",
-                            _ => "completed",
-                        };
-                        if log_operation {
-                            tracing::info!(
-                                ?interface,
-                                outcome,
-                                elapsed_ms = started.elapsed().as_millis() as u64,
-                                "control operation finished"
-                            );
-                        }
-                        response
-                    })
-                    .await
-            })
-            .await
-        {
+        let operation = async move {
+            diagnostic
+                .scope(async move {
+                    let started = std::time::Instant::now();
+                    if log_operation {
+                        tracing::info!(?interface, "control operation started");
+                    }
+                    let response = Box::pin(service.dispatch_inner(request)).await;
+                    let outcome = match &response {
+                        Response::Error { .. }
+                        | Response::DhcpClientError { .. }
+                        | Response::RouterError { .. }
+                        | Response::RouterProvisioningError { .. }
+                        | Response::VpnError { .. }
+                        | Response::VpnPolicyError { .. }
+                        | Response::WifiError { .. }
+                        | Response::WifiClientError { .. }
+                        | Response::WifiClientProfileError { .. } => "rejected",
+                        Response::NetworkChangePending { .. } => "awaiting_commit",
+                        Response::Unknown => "unknown",
+                        _ => "completed",
+                    };
+                    if log_operation {
+                        tracing::info!(
+                            ?interface,
+                            outcome,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "control operation finished"
+                        );
+                    }
+                    response
+                })
+                .await
+        };
+        let result = match operation_id {
+            Some(id) => self.operations.run_cancellable(id, operation).await,
+            None => self.operations.run(operation).await,
+        };
+        match result {
             Ok(response) => response,
             Err(error) => runtime::error_response(error),
         }

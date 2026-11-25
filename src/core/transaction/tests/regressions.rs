@@ -580,3 +580,47 @@ async fn cancelled_credential_write_retains_lane_until_compensation_can_restore_
     assert!(!desired.has_pending().await);
     assert!(!manager.journal_path("test0").exists());
 }
+
+#[tokio::test]
+async fn operator_cancellation_compensates_interface_apply_without_dropping_owner() {
+    let directory = tempdir().unwrap();
+    let desired = desired_state(directory.path()).await;
+    desired.attach_converger();
+    let provider = fake_network();
+    let manager = manager_for(&desired, provider.clone());
+    let (cancel, cancelled) = tokio::sync::watch::channel(false);
+    let worker = manager.clone();
+    let applying = tokio::spawn(async move {
+        crate::core::mutation::cancellation_scope(
+            cancelled,
+            worker.apply(
+                "test0",
+                InterfaceChange {
+                    config: &interface_config(PROPOSED),
+                    previous: None,
+                    current_role: Some(InterfaceRole::Output),
+                    passphrase: WifiPassphraseUpdate::Keep,
+                    allow_management_change: false,
+                },
+            ),
+        )
+        .await
+    });
+    wait_for_proposal(&desired).await;
+    cancel.send(true).unwrap();
+    let converger = spawn_converger_with_interfaces(
+        desired.clone(),
+        InterfaceManager::new(provider.clone(), AddressOwnershipJournal::in_memory()),
+    );
+    let result = tokio::time::timeout(WATCHDOG, applying)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(result.is_err());
+    assert!(manager.pending().await.is_empty());
+    assert!(!manager.journal_path("test0").exists());
+    assert!(!desired.has_pending().await);
+    let pending = apply_candidate(&manager).await;
+    manager.commit(&pending.token).await.unwrap();
+    converger.abort();
+}

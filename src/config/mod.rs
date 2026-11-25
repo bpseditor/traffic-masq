@@ -619,6 +619,39 @@ impl AuthConfig {
 }
 
 impl NetworkConfig {
+    /// Prepare an unconfigured paired AP as a managed output. Explicit settings,
+    /// including an unmanaged or suppressed child, always take precedence.
+    pub(crate) fn derive_concurrent_outputs(
+        &mut self,
+        suppressed: &std::collections::BTreeSet<String>,
+    ) {
+        let children: Vec<_> = self
+            .interfaces
+            .iter()
+            .filter(|(_, config)| config.managed && config.wifi_concurrent)
+            .map(|(parent, _)| traffic_masq_protocol::concurrent_ap_name(parent))
+            .collect();
+        for name in children {
+            if suppressed.contains(&name) {
+                continue;
+            }
+            self.interfaces
+                .entry(name)
+                .or_insert_with(|| InterfaceConfig {
+                    role: InterfaceRole::Output,
+                    managed: true,
+                    ipv4: None,
+                    wifi_concurrent: false,
+                    randomize_mac: false,
+                    mac_address: None,
+                    dhcp: None,
+                    dhcp_client: None,
+                    wifi: None,
+                    wifi_client: None,
+                });
+        }
+    }
+
     /// Validate each named interface and reject overlapping managed IPv4 networks.
     pub fn validate(&self) -> Result<()> {
         for (name, interface) in &self.interfaces {

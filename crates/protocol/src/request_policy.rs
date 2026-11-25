@@ -5,6 +5,8 @@ use crate::Request;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MutationKind {
     ReadOnly,
+    /// Register operator cancellation intent without acquiring runtime ownership.
+    Cancellation,
     /// Persisted settings share the committed document and serialize with runtime writers.
     Settings,
     Direct,
@@ -45,7 +47,10 @@ impl RequestPolicy<'_> {
 
     /// Retain admission across convergence waits.
     pub fn needs_admission(self) -> bool {
-        self.mutation != MutationKind::ReadOnly
+        !matches!(
+            self.mutation,
+            MutationKind::ReadOnly | MutationKind::Cancellation
+        )
     }
 
     /// Interface transactions leave execution free for their convergence workers.
@@ -61,6 +66,8 @@ impl<Interface, Proposal> Request<Interface, Proposal> {
     /// Stable command identity without inspecting or serializing payloads.
     pub fn command_name(&self) -> &'static str {
         match self {
+            Self::RunOperation { request, .. } => request.command_name(),
+            Self::CancelOperation { .. } => "cancel_operation",
             Self::Ping => "ping",
             Self::DaemonLogs { .. } => "daemon_logs",
             Self::GetApiHttpsConfig => "get_api_https_config",
@@ -165,11 +172,38 @@ impl<Interface, Proposal> Request<Interface, Proposal> {
         }
     }
 
+    /// Only transactional applies may be interrupted. Confirmation, rollback,
+    /// settings writes and immediate actions must finish their own protocol.
+    pub fn cancellable_apply(&self) -> bool {
+        !matches!(
+            self,
+            Self::RunOperation { .. }
+                | Self::VpnAutoconnectAttempt { .. }
+                | Self::VpnAutoconnectFallback { .. }
+                | Self::CommitNetworkChange { .. }
+                | Self::RollbackNetworkChange { .. }
+                | Self::RouterCommit { .. }
+                | Self::RouterRollback { .. }
+        ) && matches!(
+            self.policy().mutation,
+            MutationKind::InterfaceTransaction | MutationKind::RouterTransaction
+        )
+    }
+
     /// Exhaustive by design: adding a command requires an explicit policy.
     pub fn policy(&self) -> RequestPolicy<'_> {
         use MutationKind::*;
         use Request::*;
         match self {
+            RunOperation { request, .. } => request.policy(),
+            CancelOperation { .. } => RequestPolicy {
+                administrator: true,
+                mutation: Cancellation,
+                recovery_interface: None,
+                provisioning_recovery: true,
+                requires_idle_interfaces: false,
+                long_running: false,
+            },
             Ping
             | GetApiHttpsConfig
             | GetDhcpDnsDefaults
@@ -491,5 +525,34 @@ mod pending_change_tests {
         ] {
             assert!(!request.policy().requires_idle_interfaces, "{request:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    #[test]
+    fn envelope_preserves_authorization_and_cancel_never_waits_for_runtime() {
+        let inner: crate::ControlRequest = Request::VpnDeactivate;
+        assert!(inner.cancellable_apply());
+        let wrapped = Request::RunOperation {
+            operation_id: "apply-1".into(),
+            request: Box::new(inner.clone()),
+        };
+        assert_eq!(wrapped.policy().mutation, inner.policy().mutation);
+        assert_eq!(wrapped.policy().administrator, inner.policy().administrator);
+        assert!(
+            !wrapped.cancellable_apply(),
+            "nested envelopes must be rejected"
+        );
+        let cancel: crate::ControlRequest = Request::CancelOperation {
+            operation_id: "apply-1".into(),
+        };
+        assert!(cancel.policy().administrator);
+        assert!(!cancel.policy().needs_admission() && !cancel.policy().needs_execution());
+        let commit: crate::ControlRequest = Request::RouterCommit {
+            token: "test".into(),
+        };
+        assert!(!commit.cancellable_apply());
     }
 }

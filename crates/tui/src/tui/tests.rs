@@ -298,7 +298,7 @@ fn refreshing_preserves_footer_notification_and_does_not_flash_for_fast_reads() 
 
         terminal
             .draw(|frame| {
-                render_operation_snapshot(frame, &snapshot, None, Duration::from_millis(100), true)
+                render_operation_snapshot(frame, &snapshot, None, Duration::from_millis(100), true);
             })
             .unwrap();
         assert_eq!(terminal.backend().buffer(), &snapshot);
@@ -312,7 +312,7 @@ fn refreshing_preserves_footer_notification_and_does_not_flash_for_fast_reads() 
                         None,
                         Duration::from_secs(2),
                         cancellable,
-                    )
+                    );
                 })
                 .unwrap();
             let buffer = terminal.backend().buffer();
@@ -350,7 +350,7 @@ fn operation_snapshot_redraws_safely_after_terminal_resize() {
     let mut resized = Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
     resized
         .draw(|frame| {
-            render_operation_snapshot(frame, &snapshot, None, Duration::from_secs(2), false)
+            render_operation_snapshot(frame, &snapshot, None, Duration::from_secs(2), false);
         })
         .unwrap();
     let rendered = resized
@@ -1420,4 +1420,47 @@ async fn dashboard_inventory_does_not_refetch_interface_configuration() {
     assert_eq!(data.interfaces.len(), 1);
     assert_eq!(data.intent_revision, Some(7));
     assert_eq!(mock.calls.lock().unwrap().len(), 4);
+}
+
+#[test]
+fn applying_cancel_accepts_escape_and_only_the_visible_status_mouse_target() {
+    assert!(operation_cancel_input(
+        &Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        None
+    ));
+    let event = |column, row| {
+        Event::Mouse(event::MouseEvent {
+            kind: MouseEventKind::Down(event::MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    for (width, height) in [(80, 24), (100, 30), (60, 20)] {
+        let mut terminal =
+            Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        let snapshot = terminal.backend().buffer().clone();
+        let mut target = None;
+        terminal
+            .draw(|frame| {
+                target = render_operation_snapshot(
+                    frame,
+                    &snapshot,
+                    None,
+                    Duration::from_secs(2),
+                    false,
+                );
+            })
+            .unwrap();
+        if width < 80 || height < 24 {
+            assert!(target.is_none());
+        } else {
+            assert!(operation_cancel_input(&event(10, height - 3), target));
+            assert!(!operation_cancel_input(&event(10, height - 4), target));
+            assert!(!operation_cancel_input(
+                &event(width - 1, height - 3),
+                target
+            ));
+        }
+    }
 }

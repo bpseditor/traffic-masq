@@ -95,3 +95,50 @@ async fn shutdown_cancels_stalled_operations_after_the_drain_deadline() {
     operations.close().await;
     assert!(operations.run(async {}).await.is_err());
 }
+
+#[tokio::test]
+async fn explicit_cancel_survives_caller_disconnect_and_rejects_reused_ids() {
+    let operations = Operations::default();
+    let (started_tx, started_rx) = oneshot::channel();
+    let (finished_tx, finished_rx) = oneshot::channel();
+    let caller = tokio::spawn({
+        let operations = operations.clone();
+        async move {
+            operations
+                .run_cancellable("selected-apply".into(), async move {
+                    started_tx.send(()).unwrap();
+                    crate::core::mutation::cancellation_requested().await;
+                    finished_tx.send(()).unwrap();
+                })
+                .await
+                .unwrap();
+        }
+    });
+    started_rx.await.unwrap();
+    caller.abort();
+    assert!(operations.cancel("another-apply").await.is_err());
+    operations.cancel("selected-apply").await.unwrap();
+    finished_rx.await.unwrap();
+    assert!(operations
+        .run_cancellable("selected-apply".into(), async {})
+        .await
+        .is_err());
+    assert!(operations
+        .run_cancellable("next-apply".into(), async { 42 })
+        .await
+        .is_ok());
+    operations.close().await;
+}
+
+#[tokio::test]
+async fn finished_operation_rejects_cancel_even_if_a_worker_keeps_its_receiver() {
+    let operations = Operations::default();
+    let receiver = operations
+        .run_cancellable("completed-apply".into(), async {
+            crate::core::mutation::current_cancellation().unwrap()
+        })
+        .await
+        .unwrap();
+    assert!(operations.cancel("completed-apply").await.is_err());
+    assert!(!*receiver.borrow());
+}

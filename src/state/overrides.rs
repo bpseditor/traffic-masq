@@ -293,6 +293,13 @@ impl RuntimeOverrides {
     }
 
     pub fn effective_network(&self, base: &NetworkConfig) -> Result<NetworkConfig> {
+        let mut effective = self.explicit_network(base)?;
+        effective.derive_concurrent_outputs(&self.suppressed_interfaces);
+        effective.validate()?;
+        Ok(effective)
+    }
+
+    pub(crate) fn explicit_network(&self, base: &NetworkConfig) -> Result<NetworkConfig> {
         self.validate_suppression()?;
         let mut effective = base.clone();
         effective

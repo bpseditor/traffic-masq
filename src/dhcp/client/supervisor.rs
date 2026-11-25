@@ -582,7 +582,10 @@ impl DhcpClientSupervisor {
             if let DhcpClientRunState::Degraded { reason } = status.state {
                 bail!("DHCP client on {interface} is degraded: {reason}");
             }
-            if let Some(lease) = status.lease {
+            if let Some(lease) = status
+                .lease
+                .filter(|lease| lease.state == DhcpClientLeaseState::Bound)
+            {
                 return self.verify_bound_lease(&lease).await;
             }
             if Instant::now() >= deadline {

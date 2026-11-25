@@ -306,3 +306,56 @@ async fn transaction_operation_identity_survives_background_convergence() {
     state.withdraw("diagnostic-token").await;
     assert!(state.operation_for("lan0").await.is_none());
 }
+
+#[tokio::test]
+async fn combined_output_follows_tentative_parent_and_withdrawal() {
+    let (state, _dir) = desired_state().await;
+    let mut parent = interface("192.168.10.1/24");
+    parent.role = crate::config::InterfaceRole::Input;
+    parent.ipv4 = None;
+    parent.wifi_concurrent = true;
+    let ap = traffic_masq_protocol::concurrent_ap_name("wlan0");
+    state.propose("pair", "wlan0", parent.clone(), false).await;
+    assert!(state.effective().await.unwrap().network.interfaces[&ap].managed);
+    parent.wifi_concurrent = false;
+    assert!(!state
+        .network_for_change("wlan0", &parent)
+        .await
+        .unwrap()
+        .interfaces
+        .contains_key(&ap));
+    state.withdraw("pair").await;
+    assert!(!state
+        .effective()
+        .await
+        .unwrap()
+        .network
+        .interfaces
+        .contains_key(&ap));
+}
+
+#[tokio::test]
+async fn paired_output_is_derived_after_reopening_committed_storage() {
+    let dir = tempdir().unwrap();
+    let base = AppConfig::default();
+    let overrides = RuntimeOverrideManager::load(dir.path(), &base)
+        .await
+        .unwrap();
+    let mut parent = interface("192.168.10.1/24");
+    parent.role = InterfaceRole::Input;
+    parent.ipv4 = None;
+    parent.wifi_concurrent = true;
+    overrides
+        .set_interface("wlan0".into(), parent, false)
+        .await
+        .unwrap();
+    let reopened = RuntimeOverrideManager::load(dir.path(), &base)
+        .await
+        .unwrap();
+    let state = DesiredNetworkState::new(base, reopened);
+    let ap = traffic_masq_protocol::concurrent_ap_name("wlan0");
+    let effective = state.effective().await.unwrap();
+    let output = &effective.network.interfaces[&ap];
+    assert!(output.managed && output.role == InterfaceRole::Output);
+    assert!(output.wifi.is_none() && output.dhcp.is_none() && output.ipv4.is_none());
+}

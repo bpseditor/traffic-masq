@@ -15,7 +15,8 @@ Shared configuration objects ignore additive fields, including when nested in
 responses. Unknown request types and unknown values of configuration enums are
 still rejected; adding configuration enum values requires compatible clients.
 Request bodies are limited to 64 KiB. HTTP/1 connections close after one
-request and have a 60-second server deadline; TLS handshakes have a 10-second
+request and allow time for candidate convergence and compensation (currently
+139 seconds); TLS handshakes have a 10-second
 deadline. A lost response does not cancel an admitted control operation.
 
 ## Typed control endpoint
@@ -94,6 +95,33 @@ The examples need `curl` with `--json` support and `jq` to build and read JSON.
 Over HTTPS, replace the Unix-socket option and URL with the configured address,
 for example `https://router.example:8443/api/v1/status`, and validate the daemon
 certificate with the appropriate CA settings.
+
+## Explicit operation cancellation
+
+Wrap a transactional apply or router repair in `run_operation` with a unique
+`operation_id` (1–96 ASCII letters, digits or hyphens). The nested request keeps
+its normal authorization, admission, revision and recovery checks. Nested wrappers,
+confirmation, rollback, settings writes, immediate commands and autoconnect
+orchestration cannot be wrapped. IDs cannot be reused during a daemon lifetime;
+the registry accepts up to 65,536 distinct cancellable identities.
+
+```json
+{"type":"run_operation","operation_id":"client-unique-1","request":{"type":"vpn_deactivate"}}
+```
+
+An administrator can send `cancel_operation` with that ID on a separate connection.
+It registers cancellation intent without waiting for mutation admission; it does
+not acquire permission to write network state or bypass recovery fences. The owner
+observes cancellation before admission or at its compensatable apply boundary,
+then uses the existing coordinator to restore state. Storage workers retain their
+reservations until completion. Confirmation and rollback themselves finish normally.
+
+The `operation_cancellation_requested` response acknowledges only the request.
+Completion can race cancellation; inspect the original response and current/pending
+state. Incomplete compensation retains its recovery token and journal. A disconnect
+still does not cancel work, and clients must not replay the original write. Unknown,
+finished or invalid identities return an error. Update daemon and client together;
+there is no automatic fallback from an unsupported envelope to an unwrapped write.
 
 ## Authentication and authorization
 

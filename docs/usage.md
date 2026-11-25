@@ -533,6 +533,17 @@ through the tunnel. IPv6 from the router is blocked except loopback, link-local
 and multicast traffic. The router's DNS resolver must be reachable through the
 VPN.
 
+While a transactional apply or router repair is running, press **Esc** or click
+the progress status line to request cancellation. The client keeps the original
+request alive while the daemon restores the previous state. Cancellation may wait
+for an in-flight worker; acknowledgement alone does not mean rollback succeeded.
+A recovery failure remains visible in pending transactions. Confirmation, rollback
+and immediate actions complete normally; exiting the client does not cancel them.
+
+Input + Output prepares its virtual AP as a managed Output after confirmation.
+Configure its AP settings and sharing separately. Explicit saved child settings,
+including an unmanaged child or deleted settings, take precedence over this default.
+
 ### Daemon log viewer
 
 The Log tab still contains the local session log. **2** opens the authenticated

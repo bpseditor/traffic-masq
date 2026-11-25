@@ -475,3 +475,21 @@ fn daemon_log_access_is_administrator_only() {
     }
     assert!(authorize_control_request(&principal(Role::Administrator), &request).is_ok());
 }
+
+#[test]
+fn cancellation_and_wrapped_apply_require_administrator() {
+    for request in [
+        Request::CancelOperation {
+            operation_id: "test-operation".into(),
+        },
+        Request::RunOperation {
+            operation_id: "test-operation".into(),
+            request: Box::new(Request::VpnDeactivate),
+        },
+    ] {
+        for role in [Role::Viewer, Role::Operator] {
+            assert!(authorize_control_request(&principal(role), &request).is_err());
+        }
+        assert!(authorize_control_request(&principal(Role::Administrator), &request).is_ok());
+    }
+}

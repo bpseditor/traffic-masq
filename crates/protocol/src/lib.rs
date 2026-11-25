@@ -1274,6 +1274,15 @@ pub struct InterfaceBaseConfigView {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request<Interface, Proposal> {
+    /// Assign a client operation identity to an explicitly cancellable apply.
+    RunOperation {
+        operation_id: String,
+        request: Box<Request<Interface, Proposal>>,
+    },
+    /// Request compensation; this acknowledges intent, not completed rollback.
+    CancelOperation {
+        operation_id: String,
+    },
     Ping,
     DaemonLogs {
         limit: usize,
@@ -1581,6 +1590,9 @@ impl<Interface: Serialize, Proposal: Serialize> fmt::Debug for Request<Interface
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
+    OperationCancellationRequested {
+        operation_id: String,
+    },
     Pong,
     DaemonLogs {
         snapshot: DaemonLogSnapshot,

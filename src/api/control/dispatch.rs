@@ -7,7 +7,11 @@ impl ControlService {
     pub(super) async fn dispatch_inner(&self, request: Request) -> Response {
         let policy = request.policy();
         let _admission = if policy.needs_admission() {
-            Some(self.network_mutations.admit().await)
+            Some(tokio::select! {
+                biased;
+                () = crate::core::mutation::cancellation_requested() => return error_response("operation cancelled before admission; no changes applied"),
+                guard = self.network_mutations.admit() => guard,
+            })
         } else {
             None
         };
@@ -131,6 +135,9 @@ impl ControlService {
         }
 
         match request {
+            Request::RunOperation { .. } | Request::CancelOperation { .. } => {
+                error_response("operation envelope must pass through tracked dispatch")
+            }
             Request::Ping => Response::Pong,
             Request::DaemonLogs { limit } => {
                 let directory = self.config.runtime.log_dir.clone();

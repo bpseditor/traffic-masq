@@ -672,7 +672,8 @@ async fn run_loop(
                         vpn::load_vpn_data(&mut app, client).await;
                     }
                 };
-                let interrupted = drive_ui(terminal, snapshot, deadline, refresh, true).await?;
+                let interrupted =
+                    drive_ui(terminal, snapshot, deadline, refresh, true, None).await?;
                 if interrupted.is_some() {
                     queued_input = interrupted;
                 } else {
@@ -709,10 +710,11 @@ async fn run_loop(
             if let Some(input) = input {
                 let snapshot = draw_app(terminal, &mut app, direct)?.buffer.clone();
                 let deadline = pending_deadline(&app);
+                let action_client = client.cancellable();
                 let action = async {
                     match input {
                         Event::Key(key) if key.kind == event::KeyEventKind::Press => {
-                            handle_key_event(&mut app, key, client, direct).await;
+                            handle_key_event(&mut app, key, &action_client, direct).await;
                         }
                         Event::Paste(text)
                             if app.screen == Screen::VpnImport
@@ -733,14 +735,21 @@ async fn run_loop(
                             }
                         }
                         Event::Mouse(mouse) => {
-                            handle_mouse(&mut app, mouse, client, direct).await;
+                            handle_mouse(&mut app, mouse, &action_client, direct).await;
                         }
                         _ => {}
                     }
                 };
-                if drive_ui(terminal, snapshot, deadline, action, false)
-                    .await?
-                    .is_some()
+                if drive_ui(
+                    terminal,
+                    snapshot,
+                    deadline,
+                    action,
+                    false,
+                    Some(&action_client),
+                )
+                .await?
+                .is_some()
                 {
                     app.should_quit = true;
                 }
@@ -785,14 +794,33 @@ async fn drive_ui(
     deadline: Option<u64>,
     operation: impl std::future::Future<Output = ()>,
     cancellable: bool,
+    action_client: Option<&ApiClient>,
 ) -> Result<Option<Event>> {
     tokio::pin!(operation);
     let started = std::time::Instant::now();
     let mut exit_requested = None;
+    let mut cancel_future: Option<
+        std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<bool>> + '_>>,
+    > = None;
+    let mut cancel_status: Option<String> = None;
+    let mut cancel_target = None;
     loop {
         tokio::select! {
             biased;
             _ = &mut operation => return Ok(exit_requested),
+            result = async {
+                match &mut cancel_future {
+                    Some(future) => future.await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                cancel_future = None;
+                cancel_status = Some(match result {
+                    Ok(true) => "Cancellation requested; waiting for restoration (outcome unverified)".into(),
+                    Ok(false) => "This stage cannot be cancelled; waiting for its result".into(),
+                    Err(error) => format!("Cancellation unverified: {error}"),
+                });
+            }
             _ = tokio::time::sleep(Duration::from_millis(50)) => {
                 let elapsed = started.elapsed();
                 let should_render = !cancellable
@@ -800,9 +828,17 @@ async fn drive_ui(
                     || deadline.is_some();
                 if should_render {
                     terminal.draw(|frame| {
-                        render_operation_snapshot(
+                        cancel_target = render_operation_snapshot(
                             frame, &snapshot, deadline, elapsed, cancellable,
                         );
+                        if let Some(message) = &cancel_status {
+                            let area = frame.area();
+                            if area.width >= 80 && area.height >= 24 {
+                                let banner = ratatui::layout::Rect::new(area.x + 1, area.y + area.height - 3, area.width - 2, 1);
+                                frame.render_widget(ratatui::widgets::Clear, banner);
+                                frame.render_widget(Paragraph::new(message.as_str()), banner);
+                            }
+                        }
                     })?;
                 }
                 while event::poll(Duration::ZERO)? {
@@ -810,10 +846,30 @@ async fn drive_ui(
                     if matches!(input, Event::Key(k) if k.kind != event::KeyEventKind::Press) { continue; }
                     if matches!(input, Event::Mouse(m) if matches!(m.kind, MouseEventKind::Moved)) { continue; }
                     if cancellable { return Ok(Some(input)); }
+                    if matches!(input, Event::Resize(..)) { cancel_target = None; continue; }
+                    if operation_cancel_input(&input, cancel_target) && cancel_future.is_none() {
+                        if let Some(client) = action_client {
+                            cancel_status = Some("Requesting cancellation; outcome unverified".into());
+                            cancel_future = Some(Box::pin(client.cancel_current_operation()));
+                        }
+                    }
                     if matches!(input, Event::Key(k) if is_operation_exit_key(k)) { exit_requested = Some(input); }
                 }
             }
         }
+    }
+}
+
+fn operation_cancel_input(input: &Event, target: Option<ratatui::layout::Rect>) -> bool {
+    match input {
+        Event::Key(key) => key.kind == event::KeyEventKind::Press && key.code == KeyCode::Esc,
+        Event::Mouse(mouse) => {
+            matches!(mouse.kind, MouseEventKind::Down(event::MouseButton::Left))
+                && target.is_some_and(|area| {
+                    area.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
+                })
+        }
+        _ => false,
     }
 }
 
@@ -826,7 +882,7 @@ fn render_operation_snapshot(
     deadline: Option<u64>,
     elapsed: Duration,
     cancellable: bool,
-) {
+) -> Option<ratatui::layout::Rect> {
     let area = frame.area();
     if area == snapshot.area {
         *frame.buffer_mut() = snapshot.clone();
@@ -834,13 +890,13 @@ fn render_operation_snapshot(
         frame.render_widget(ratatui::widgets::Clear, area);
     }
     if cancellable && elapsed < Duration::from_millis(500) {
-        return;
+        return None;
     }
     if area.width < MIN_TERMINAL_WIDTH || area.height < MIN_TERMINAL_HEIGHT {
         let message = if cancellable {
             "Refreshing… resize to at least 80x24"
         } else {
-            "Applying changes… resize to at least 80x24. Q: exit after result"
+            "Applying changes… Esc: request cancel; Q: exit after result"
         };
         frame.render_widget(
             Paragraph::new(message)
@@ -848,7 +904,7 @@ fn render_operation_snapshot(
                 .style(Style::default().fg(theme::WARN)),
             area,
         );
-        return;
+        return None;
     }
     let remaining = deadline
         .map(|d| {
@@ -869,7 +925,7 @@ fn render_operation_snapshot(
         if cancellable {
             "Displayed data may be stale; input interrupts refresh"
         } else {
-            "Q: exit after result; other actions disabled"
+            "Esc / click status: request cancel; Q: exit after result"
         },
     );
     // The first inner footer row contains key hints. The second contains the
@@ -881,6 +937,7 @@ fn render_operation_snapshot(
         Paragraph::new(message).style(Style::default().fg(theme::MUTED)),
         banner,
     );
+    (!cancellable).then_some(banner.intersection(area))
 }
 
 /// Run the authentication flow after session loss and restore access to protected screens.
@@ -950,6 +1007,7 @@ async fn reauthenticate(
                                 result = Some(client.login(&password).await);
                             },
                             false,
+                            None,
                         )
                         .await?;
                         password.zeroize();

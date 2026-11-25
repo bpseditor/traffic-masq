@@ -85,10 +85,10 @@ In a terminal application, performing long-running network operations directly i
 1. **Non-blocking Polling Loop:** While awaiting a future (e.g. an API request or background status poll), `drive_ui` sleeps in 50ms intervals using `tokio::select!`.
 2. **Snapshot-Based Progress Rendering:** On each 50ms tick, if an operation takes longer than 500ms, `render_operation_snapshot` draws a subtle progress banner:
    - Cancellable reads: `"Refreshing Xs. Displayed data may be stale; input interrupts refresh"`
-   - Non-cancellable writes: `"Applying changes Xs; rollback deadline in Ys. Q: exit after result; other actions disabled"`
-3. **Cancellable vs. Non-Cancellable Operations:**
+   - Non-cancellable writes: `"Applying changes Xs; Esc / click status: request cancel; Q: exit after result"`
+3. **Refresh Interruption and Explicit Cancellation:**
    - **Reads/Refreshes (`cancellable = true`):** If the user presses any key during a background refresh, the future is dropped immediately, returning the input event so the operator's action is processed without latency.
-   - **Mutations/Applies (`cancellable = false`):** The TUI never cancels or retries network mutations. Ctrl+C also queues an exit until the response arrives. The client waits up to 65 seconds while the HTTP connection has a 60-second deadline. Admitted operations can continue beyond either deadline; a timeout leaves the outcome unknown and requires inspecting pending/current state. The UI permits pressing `q` to queue an exit after the response arrives, but blocks other inputs.
+   - **Mutations/Applies (`cancellable = false`):** The TUI keeps network requests alive and never retries them automatically. During transactional apply or router repair, Esc or clicking the progress status requests explicit daemon-owned cancellation; the display waits for verified compensation or inspectable recovery. Confirmation, rollback and immediate commands finish normally. Ctrl+C queues an exit until the response arrives. Long requests have a 145-second client deadline and a server deadline covering convergence plus compensation. Admitted operations can continue beyond either deadline; a timeout leaves the outcome unknown and requires inspecting pending/current state. The UI permits pressing `q` to queue an exit after the response arrives, and isolates other actions while the request runs.
 4. **Resize-Safe Progress Rendering:** At the same terminal size, the progress banner reuses the last rendered frame so footer/status context stays intact. After a resize, the stale snapshot is discarded and progress is rendered against the new geometry instead of replaying old coordinates.
 
 ### 3.2. Commit-Confirm & Immediate Mutation Flows

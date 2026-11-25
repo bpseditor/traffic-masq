@@ -353,3 +353,39 @@ async fn schema_four_loads_without_standalone_intent_and_next_save_publishes_sch
         loaded.standalone_vpn
     );
 }
+
+#[test]
+fn combined_mode_derives_only_missing_outputs_and_respects_suppression() {
+    let mut base = base_config();
+    let mut parent = interface_config("192.168.10.1/24");
+    parent.role = InterfaceRole::Input;
+    parent.wifi_concurrent = true;
+    parent.ipv4 = None;
+    base.network.interfaces.insert("wlan0".into(), parent);
+    let child = traffic_masq_protocol::concurrent_ap_name("wlan0");
+    let mut overrides = RuntimeOverrides::default();
+    let effective = overrides.effective_config(&base).unwrap();
+    let output = &effective.network.interfaces[&child];
+    assert!(output.managed);
+    assert_eq!(output.role, InterfaceRole::Output);
+    assert!(output.wifi.is_none() && output.dhcp.is_none() && output.ipv4.is_none());
+    overrides.forget_interface(&child);
+    assert!(!overrides
+        .effective_config(&base)
+        .unwrap()
+        .network
+        .interfaces
+        .contains_key(&child));
+    overrides.reset_interface_override(&child);
+    let mut explicit = output.clone();
+    explicit.managed = false;
+    base.network.interfaces.insert(child.clone(), explicit);
+    assert!(
+        !overrides
+            .effective_config(&base)
+            .unwrap()
+            .network
+            .interfaces[&child]
+            .managed
+    );
+}

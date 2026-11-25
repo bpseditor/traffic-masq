@@ -2143,3 +2143,91 @@ async fn status_remains_readable_during_repair() {
     assert_eq!(coordinator.view().await.phase, RouterPhase::Idle);
     assert_eq!(coordinator.last_applied_revision(), Some(1));
 }
+
+#[tokio::test]
+async fn operator_cancellation_compensates_router_apply_and_allows_next_commit() {
+    let fake = FakeSubsystems::new();
+    let (coordinator, overrides, _directory) = coordinator_with(fake.clone()).await;
+    let plan = coordinator
+        .plan(build_candidate(&overrides).await)
+        .await
+        .unwrap();
+    fake.pause_apply.store(true, Ordering::SeqCst);
+    let (cancel, cancelled) = tokio::sync::watch::channel(false);
+    let worker = coordinator.clone();
+    let applying = tokio::spawn(async move {
+        crate::core::mutation::cancellation_scope(cancelled, worker.apply(plan)).await
+    });
+    fake.apply_entered.notified().await;
+    cancel.send(true).unwrap();
+    assert!(applying.await.unwrap().is_err());
+    assert_eq!(coordinator.status().await, CoordinatorStatus::Idle);
+    assert!(!coordinator.inner.journal.exists());
+    assert_eq!(overrides.committed_revision().await, 0);
+    fake.pause_apply.store(false, Ordering::SeqCst);
+    let plan = coordinator
+        .plan(build_candidate(&overrides).await)
+        .await
+        .unwrap();
+    let token = coordinator.apply(plan).await.unwrap();
+    coordinator.commit(&token).await.unwrap();
+    assert_eq!(overrides.committed_revision().await, 1);
+}
+
+#[tokio::test]
+async fn operator_cancellation_compensates_router_repair() {
+    let fake = FakeSubsystems::new();
+    let (coordinator, overrides, _directory) = coordinator_with(fake.clone()).await;
+    let desired = build_candidate(&overrides).await.desired().clone();
+    fake.pause_apply.store(true, Ordering::SeqCst);
+    let (cancel, cancelled) = tokio::sync::watch::channel(false);
+    let worker = coordinator.clone();
+    let repairing = tokio::spawn(async move {
+        crate::core::mutation::cancellation_scope(cancelled, worker.repair(desired)).await
+    });
+    fake.apply_entered.notified().await;
+    cancel.send(true).unwrap();
+    assert!(repairing.await.unwrap().is_err());
+    assert_eq!(coordinator.status().await, CoordinatorStatus::Idle);
+    assert!(!coordinator.inner.journal.exists());
+    assert_eq!(overrides.committed_revision().await, 0);
+}
+
+#[tokio::test]
+async fn operator_cancel_failure_retains_recovery_until_explicit_retry() {
+    let fake = FakeSubsystems::new();
+    let (coordinator, overrides, _directory) = coordinator_with(fake.clone()).await;
+    let plan = coordinator
+        .plan(build_candidate(&overrides).await)
+        .await
+        .unwrap();
+    fake.pause_apply.store(true, Ordering::SeqCst);
+    fake.fail_rollback("rollback_routes");
+    *fake.rollback_failure_kind.lock().unwrap() = Some(recovery_control::FailureKind::Conflict);
+    let (cancel, cancelled) = tokio::sync::watch::channel(false);
+    let worker = coordinator.clone();
+    let applying = tokio::spawn(async move {
+        crate::core::mutation::cancellation_scope(cancelled, worker.apply(plan)).await
+    });
+    fake.apply_entered.notified().await;
+    cancel.send(true).unwrap();
+    assert!(applying.await.unwrap().is_err());
+    let token = coordinator
+        .pending_token()
+        .await
+        .expect("failed compensation remains visible");
+    assert!(coordinator.inner.journal.exists());
+    assert!(coordinator.commit(&token).await.is_err());
+    assert_eq!(overrides.committed_revision().await, 0);
+    *fake.rollback_fail.lock().unwrap() = None;
+    fake.pause_apply.store(false, Ordering::SeqCst);
+    coordinator.rollback_with_token(&token).await.unwrap();
+    assert!(!coordinator.inner.journal.exists());
+    let plan = coordinator
+        .plan(build_candidate(&overrides).await)
+        .await
+        .unwrap();
+    let next = coordinator.apply(plan).await.unwrap();
+    coordinator.commit(&next).await.unwrap();
+    assert_eq!(overrides.committed_revision().await, 1);
+}

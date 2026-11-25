@@ -672,7 +672,7 @@ pub(crate) fn render_editor(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mu
     if editor.wifi_concurrent {
         lines.push(Line::styled(
             format!(
-                "  AP interface: {} — configure Wi-Fi and Route after Commit",
+                "  AP interface: {} — managed Output; configure Wi-Fi and Route after Commit",
                 traffic_masq_protocol::concurrent_ap_name(&editor.interface)
             ),
             Style::default().fg(theme::MUTED),

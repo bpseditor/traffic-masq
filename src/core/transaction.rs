@@ -372,10 +372,7 @@ impl NetworkTransactionManager {
         current_role: Option<InterfaceRole>,
         allow_management_change: bool,
     ) -> Result<InterfaceChangePlan> {
-        let mut network = self.desired().effective().await?.network;
-        network
-            .interfaces
-            .insert(interface.to_owned(), config.clone());
+        let network = self.desired().network_for_change(interface, config).await?;
         self.inner
             .interface_manager
             .validate_wifi_radio_policy(&network)?;
@@ -386,6 +383,26 @@ impl NetworkTransactionManager {
             && !config.wifi_concurrent
         {
             let ap = crate::wifi::concurrent::ap_name(interface);
+            let effective = self.desired().effective().await?;
+            anyhow::ensure!(
+                !effective
+                    .router
+                    .forwarding
+                    .iter()
+                    .flatten()
+                    .any(|rule| rule.from == ap || rule.to == ap)
+                    && !effective
+                        .router
+                        .owned_routes
+                        .iter()
+                        .any(|route| route.output_interface.as_deref() == Some(ap.as_str()))
+                    && effective
+                        .router
+                        .uplink
+                        .as_ref()
+                        .is_none_or(|uplink| uplink.interface != ap),
+                "remove router references to virtual AP {ap} before leaving Input + Output"
+            );
             anyhow::ensure!(
                 !network
                     .interfaces
@@ -637,7 +654,11 @@ impl NetworkTransactionManager {
         drop(lane);
         drop(execution);
         let mut applied = match staged {
-            Ok(()) => self.await_convergence(&desired, interface).await,
+            Ok(()) => tokio::select! {
+                biased;
+                () = crate::core::mutation::cancellation_requested() => Err(anyhow::anyhow!("interface apply cancelled by operator")),
+                result = self.await_convergence(&desired, interface) => result,
+            },
             Err(error) => Err(error),
         };
         if let Some(guard) = apply_guard {
@@ -650,6 +671,9 @@ impl NetworkTransactionManager {
                 .compensate_failed_apply(candidate, error, &mut cancellation)
                 .await;
         }
+        // Confirmation is a separate protocol: late operation cancellation
+        // must not poison future convergence of an already applied candidate.
+        desired.finish_operation(interface, &token).await;
         Ok(self.await_confirmation(candidate, &mut cancellation).await)
     }
 

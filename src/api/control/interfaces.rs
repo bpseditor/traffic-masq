@@ -158,7 +158,10 @@ impl ControlService {
                 let config_source = match snapshot.interfaces.get(&name) {
                     Some(value) if value.dhcp_client_only => InterfaceConfigSource::Derived,
                     Some(_) => InterfaceConfigSource::Override,
-                    None if configured.is_some() => InterfaceConfigSource::Base,
+                    None if self.base_config.network.interfaces.contains_key(&name) => {
+                        InterfaceConfigSource::Base
+                    }
+                    None if configured.is_some() => InterfaceConfigSource::Derived,
                     None => InterfaceConfigSource::None,
                 };
                 let presence = if observation_error.is_some() {

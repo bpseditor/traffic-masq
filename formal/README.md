@@ -124,3 +124,11 @@ VPN handshake readiness remains within `applying`; only a successful readiness
 check permits `awaitingCommit`. Autoconnect refresh uses the same registration,
 compensation and confirmation boundaries as standalone VPN activation. It adds
 no abstract transition and cannot bypass an existing pending transaction.
+
+Explicit operator cancellation uses the existing `applying` to compensation
+boundaries. Unlike dropping a router apply task, its cooperative signal stays
+inside the coordinator and runs ordinary failed-apply restoration. Cancellation
+acknowledgement is not an abstract successful-restoration step. Admission, signal
+identity isolation and retained blocking-worker reservations remain Rust obligations;
+see `api::operations`, control admission tests, and operator cancellation tests in
+both coordinators. No abstract transition or proof assumption is added.

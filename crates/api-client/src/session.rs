@@ -47,6 +47,7 @@ impl ClientAuthentication {
 pub struct ApiClient<Response> {
     _response: std::marker::PhantomData<fn() -> Response>,
     endpoint: crate::endpoint::Endpoint,
+    cancellation: Option<Arc<std::sync::Mutex<Option<String>>>>,
     session: Arc<RwLock<Option<ClientAuthentication>>>,
 }
 
@@ -55,6 +56,7 @@ impl<Response> Clone for ApiClient<Response> {
         Self {
             _response: std::marker::PhantomData,
             endpoint: self.endpoint.clone(),
+            cancellation: self.cancellation.clone(),
             session: self.session.clone(),
         }
     }
@@ -75,7 +77,51 @@ impl<Response: serde::de::DeserializeOwned> ApiClient<Response> {
             endpoint: crate::endpoint::Endpoint::Unix(socket_path.into()),
             _response: std::marker::PhantomData,
             session: Arc::new(RwLock::new(None)),
+            cancellation: None,
         }
+    }
+
+    /// A single UI action may contain several sequential requests. Only the
+    /// currently active transactional apply is exposed for explicit cancellation.
+    pub fn cancellable(&self) -> Self {
+        let mut client = self.clone();
+        client.cancellation = Some(Arc::new(std::sync::Mutex::new(None)));
+        client
+    }
+
+    pub fn has_cancellable_operation(&self) -> bool {
+        self.cancellation
+            .as_ref()
+            .is_some_and(|slot| slot.lock().unwrap().is_some())
+    }
+
+    pub async fn cancel_current_operation(&self) -> Result<bool> {
+        let id = self
+            .cancellation
+            .as_ref()
+            .and_then(|slot| slot.lock().unwrap().clone());
+        let Some(operation_id) = id else {
+            return Ok(false);
+        };
+        let request: traffic_masq_protocol::ControlRequest =
+            traffic_masq_protocol::Request::CancelOperation {
+                operation_id: operation_id.clone(),
+            };
+        let body = into_success_body(
+            self.send(
+                hyper::Method::POST,
+                "/api/v1/control",
+                Some(serialize_json(&request)?),
+            )
+            .await?,
+        )?;
+        let response: serde_json::Value = serde_json::from_slice(&body)?;
+        anyhow::ensure!(
+            response["type"] == "operation_cancellation_requested"
+                && response["operation_id"] == operation_id,
+            "cancellation was not acknowledged; inspect current/pending state"
+        );
+        Ok(true)
     }
 
     /// Clear local credentials without contacting the server.
@@ -107,6 +153,7 @@ impl<Response: serde::de::DeserializeOwned> ApiClient<Response> {
             )),
             _response: std::marker::PhantomData,
             session: Arc::new(RwLock::new(None)),
+            cancellation: None,
         })
     }
 
@@ -217,13 +264,42 @@ impl<Response: serde::de::DeserializeOwned> ApiClient<Response> {
     /// Send a typed command to the control endpoint and decode its response.
     /// Transport, HTTP status, and response decoding failures are returned to the caller.
     /// HTTP 200 domain errors decode successfully as `Ok(Response::*Error)`;
-    /// callers must inspect the variant. Reads use 10 seconds; writes, scans and plans 65.
+    /// callers must inspect the variant. Reads use 10 seconds; writes, scans and plans 145.
     /// A lost response leaves mutation outcome unknown: inspect state before
     /// retrying and never automatically retry such a mutation.
     pub async fn request(
         &self,
         request: &traffic_masq_protocol::ControlRequest,
     ) -> anyhow::Result<Response> {
+        let wrapped;
+        let mut active = None;
+        let request = if let Some(slot) = self
+            .cancellation
+            .as_ref()
+            .filter(|_| request.cancellable_apply())
+        {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let id = format!(
+                "{}-{nonce}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            );
+            let slot = slot.clone();
+            *slot.lock().unwrap() = Some(id.clone());
+            active = Some(ActiveOperation(slot));
+            wrapped = traffic_masq_protocol::Request::RunOperation {
+                operation_id: id,
+                request: Box::new(request.clone()),
+            };
+            &wrapped
+        } else {
+            request
+        };
+        let _active = active;
         let RestRequest {
             method,
             path,
@@ -358,6 +434,13 @@ fn into_success_body(response: RawResponse) -> Result<Bytes> {
         "API request failed with status {}: {fallback}",
         response.status
     )
+}
+
+struct ActiveOperation(Arc<std::sync::Mutex<Option<String>>>);
+impl Drop for ActiveOperation {
+    fn drop(&mut self) {
+        *self.0.lock().unwrap() = None;
+    }
 }
 
 #[cfg(test)]

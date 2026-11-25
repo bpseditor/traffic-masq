@@ -20,11 +20,12 @@ use crate::core::interface::InterfaceSnapshot;
 use crate::core::override_manager::RuntimeOverrideManager;
 
 /// An applied-but-unconfirmed interface configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct TentativeInterface {
     /// The transaction that proposed it, so only its owner can withdraw it.
     token: String,
     diagnostic: crate::logging::operation::Operation,
+    cancellation: Option<watch::Receiver<bool>>,
     config: InterfaceConfig,
     /// Carried alongside the config because the converger has to be able to
     /// realise the proposal, and a role change it is not allowed to make is
@@ -402,21 +403,46 @@ impl DesiredNetworkState {
     /// Merge base configuration, committed overrides, and tentative interface changes.
     /// Tentative entries take precedence; invalid committed configuration is an error.
     pub async fn effective(&self) -> Result<AppConfig> {
+        self.effective_with_interface(None).await
+    }
+
+    pub(crate) async fn network_for_change(
+        &self,
+        name: &str,
+        config: &InterfaceConfig,
+    ) -> Result<crate::config::NetworkConfig> {
+        Ok(self
+            .effective_with_interface(Some((name, config)))
+            .await?
+            .network)
+    }
+
+    async fn effective_with_interface(
+        &self,
+        replacement: Option<(&str, &InterfaceConfig)>,
+    ) -> Result<AppConfig> {
         // Read the tentative layer before committed state and retain it while
         // reading overrides. Commit persists first, then withdraws: this order
         // cannot combine old overrides with an already withdrawn proposal.
         let tentative = self.tentative.lock().await;
-        let mut effective = self
-            .overrides
-            .snapshot()
-            .await
-            .effective_config(&self.base)?;
+        let snapshot = self.overrides.snapshot().await;
+        let mut effective = snapshot.effective_config(&self.base)?;
+        effective.network = snapshot.explicit_network(&self.base.network)?;
         for (interface, pending) in tentative.iter() {
             effective
                 .network
                 .interfaces
                 .insert(interface.clone(), pending.config.clone());
         }
+        if let Some((name, config)) = replacement {
+            effective
+                .network
+                .interfaces
+                .insert(name.to_owned(), config.clone());
+        }
+        effective
+            .network
+            .derive_concurrent_outputs(&snapshot.suppressed_interfaces);
         Ok(effective)
     }
 
@@ -474,6 +500,7 @@ impl DesiredNetworkState {
             interface.to_string(),
             TentativeInterface {
                 token: token.to_string(),
+                cancellation: crate::core::mutation::current_cancellation(),
                 diagnostic: crate::logging::operation::current().unwrap_or_else(|| {
                     crate::logging::operation::Operation::new("internal", "apply_interface")
                 }),
@@ -485,6 +512,26 @@ impl DesiredNetworkState {
         // Bumped after the layer is in place, never before: a converger that
         // reads this version has to be able to see what it stands for.
         self.interface_changed(interface);
+    }
+
+    pub(crate) async fn finish_operation(&self, interface: &str, token: &str) {
+        if let Some(entry) = self
+            .tentative
+            .lock()
+            .await
+            .get_mut(interface)
+            .filter(|entry| entry.token == token)
+        {
+            entry.cancellation = None;
+        }
+    }
+
+    pub(crate) async fn cancellation_for(&self, interface: &str) -> Option<watch::Receiver<bool>> {
+        self.tentative
+            .lock()
+            .await
+            .get(interface)
+            .and_then(|entry| entry.cancellation.clone())
     }
 
     pub(crate) async fn operation_for(
@@ -578,6 +625,7 @@ impl DesiredNetworkState {
             TentativeInterface {
                 token: token.to_owned(),
                 diagnostic,
+                cancellation: None,
                 config,
                 allow_management_change: true,
                 restore: Some(snapshot),
