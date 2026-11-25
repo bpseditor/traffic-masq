@@ -398,9 +398,15 @@ fn export_log(app: &mut TuiApp) {
         })
         .collect();
 
-    let unix_now = super::current_unix_time();
-    let path = std::env::temp_dir().join(format!("traffic-masq-session-{unix_now}.log"));
-    match std::fs::write(&path, contents) {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "traffic-masq-session-{}-{nonce}.log",
+        std::process::id()
+    ));
+    match traffic_masq_atomic_file::create_new(&path, contents.as_bytes(), 0o600) {
         Ok(()) => {
             app.push_message(
                 LogLevel::Info,

@@ -174,8 +174,9 @@ Set the password afterward with `sudo /usr/local/bin/traffic-masq`. Initial setu
 requires a local root client; there is no default password. Select Wi-Fi or
 WireGuard dependency presets if needed. Enter presets as one comma-separated
 list (`router,wifi-ap`, for example), or `none` to skip dependency checks.
-Presets install prerequisites only;
-network features remain disabled until you configure them.
+Presets install prerequisites only. The wizard separately offers to configure
+the built-in DHCP client on a selected Ethernet interface when creating a new
+configuration.
 
 For unattended installation, specify user access and password setup:
 
@@ -189,6 +190,30 @@ Use `--skip-user-access` for root-only access, or `--defer-password` to set the
 password later. The default dependency preset is `router`. Unattended installs
 leave dependency installation and immediate startup off unless requested.
 
+To let a free Ethernet port obtain a management address on a network with a
+DHCP server, choose the port in the wizard or pass its name explicitly:
+
+```sh
+sudo ./traffic-masqd install --non-interactive --skip-user-access \
+  --defer-password --dhcp-client enp1s0 --start
+```
+
+The daemon starts the DHCP client from the saved configuration and requests an
+IPv4 address without installing a default route or requesting DNS. API
+readiness and DHCP lease acquisition are separate. This provides access from
+the local subnet through that port. Check the assigned address
+with `ip -4 addr show dev enp1s0` or in the DHCP server's lease list. A direct
+cable between two devices needs a DHCP server on that link for this to work.
+
+If you already administer the device through an Ethernet address, skip this
+option and keep the network service that provides that address. Use this
+option only on a port released by its previous owner. The installer rejects
+ports with an existing IPv4 address or active NetworkManager/networkd control
+and requires a new configuration file. It also refuses DHCP setup when ownership
+observation is incomplete or dhclient, dhcpcd, udhcpc, ConnMan or wicked is running:
+the scanner cannot prove which interfaces those services control. In that case,
+omit `--dhcp-client` and configure DHCP later after verifying interface ownership.
+
 The default prefix is `/usr/local`; change it with `--prefix`. The daemon's
 global `--config` option defaults to `/etc/traffic-masq/config.toml`.
 Use `--dry-run` to inspect the plan without changing the machine.
@@ -198,8 +223,9 @@ their contents never appear in arguments, plans, logs, or errors.
 The installer preserves existing configuration, credentials, profiles, state,
 and ownership journals. It refuses replacement while the daemon is running and
 refuses a conflicting configured socket group. A newly created configuration
-manages no interfaces. Adding a user to `traffic-masq` requires signing out and
-back in before that session can access the socket.
+manages no interfaces unless you select an Ethernet DHCP client. Adding a user
+to `traffic-masq` requires signing out and back in before that session can
+access the socket.
 
 The installer supports apt, dnf and pacman. With other package managers it lists
 what to install manually. On apt systems, install missing Wi-Fi packages yourself:
@@ -232,9 +258,9 @@ or a C compiler.
 The installer prints a read-only network conflict report before asking questions,
 including in unattended and dry-run mode. It checks saved managed interfaces again
 when an existing configuration is selected, and repeats the scan after installing
-packages because package hooks can start networking services. Findings do not
-block installation: a fresh configuration manages no interfaces, and existing
-services may legitimately provide the WAN. Follow the report's interface-specific
+packages because package hooks can start networking services. The report is
+advisory. The Ethernet DHCP option additionally checks the selected port before
+writing the new configuration. Follow the report's interface-specific
 handover advice before enabling network features. No foreign service is stopped
 and no interface is released automatically. The final summary prints commands
 using the actual installation prefix, configuration path and API socket.
@@ -699,7 +725,7 @@ traffic-masqd [--config <path>] <command>
 | `config path` | Print the selected configuration path. |
 | `config show` | Print the selected configuration. |
 | `config validate` | Validate the selected configuration. |
-| `config init [--path PATH] [--force]` | Create a configuration file. |
+| `config init [--path PATH] [--force]` | Atomically create a configuration file; refuse an existing file unless `--force` is supplied. |
 
 Normal shutdown already attempts to roll back unconfirmed network and Router/VPN
 transactions. `stop --force` explicitly requests cancellation of all pending

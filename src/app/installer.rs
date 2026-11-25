@@ -11,13 +11,17 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, ValueEnum};
 use nix::unistd::{chown, Gid, Group, Uid, User};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+use traffic_masq_protocol::InterfaceRole;
 use zeroize::Zeroize;
 
 use crate::app::init::{self, InitPlan, InitSystem, NativeRunner, ServiceStore};
 use crate::app::service::{self, ServiceStatus};
 use crate::atomic_file;
 use crate::auth::{AuthService, MINIMUM_PASSWORD_CHARACTERS};
-use crate::config::{AppConfig, CONFIG_ENV, DEFAULT_CONFIG_PATH};
+use crate::config::{
+    AppConfig, DhcpClientInterfaceConfig, InterfaceConfig, CONFIG_ENV, DEFAULT_CONFIG_PATH,
+};
+use crate::netlink::{NetworkProvider, RtnetlinkNetworkProvider};
 
 use super::process::ProcessGuard;
 
@@ -57,6 +61,9 @@ pub struct InstallArgs {
     /// Start the daemon after installation and wait until its API is ready
     #[arg(long)]
     pub start: bool,
+    /// Configure a free Ethernet interface to obtain a management IPv4 address by DHCP
+    #[arg(long, value_name = "IFACE")]
+    pub dhcp_client: Option<String>,
     /// Boot service integration; auto detects the running init, none removes our registration
     #[arg(long, value_enum, default_value = "auto")]
     pub init_system: InitSystem,
@@ -230,6 +237,7 @@ struct InstallPlan {
     tui_destination: PathBuf,
     config: AppConfig,
     config_exists: bool,
+    dhcp_client: Option<String>,
     auth_initialized: bool,
     dependencies: DependencyPlan,
     init: InitPlan,
@@ -269,7 +277,7 @@ pub async fn run(mut args: InstallArgs, config_override: Option<PathBuf>) -> Res
         print_plan(&plan);
         let managed = managed_interfaces(&plan.config);
         if !managed.is_empty() {
-            println!("\nExisting configuration assigns these interfaces to traffic-masq:");
+            println!("\nThe planned configuration assigns these interfaces to traffic-masq:");
             print_network_preflight(&managed).await;
         }
         if args.dry_run {
@@ -386,6 +394,22 @@ async fn interactive_choices(
             *config_path = PathBuf::from(path);
         }
     }
+    if !config_path.try_exists()? {
+        println!("Use a free Ethernet port on a network with a DHCP server. Leave a port already providing management access under its current owner.");
+        let default = args.dhcp_client.as_deref().unwrap_or("-");
+        let answer = prompt(&format!(
+            "Ethernet interface for DHCP [{default}] ('-' to skip): "
+        ))?;
+        match answer.as_str() {
+            "" => {}
+            "-" => args.dhcp_client = None,
+            _ => args.dhcp_client = Some(answer),
+        }
+    } else if args.dhcp_client.is_some()
+        && prompt_yes_no("Keep the existing configuration and skip DHCP setup?", true)?
+    {
+        args.dhcp_client = None;
+    }
     let config = if config_path.exists() {
         AppConfig::load(config_path)?
     } else {
@@ -477,6 +501,11 @@ async fn build_plan(
     } else {
         AppConfig::default()
     };
+    if let Some(interface) = &args.dhcp_client {
+        require_new_dhcp_config(&config_path)?;
+        configure_install_dhcp(&mut config, interface)?;
+        check_install_dhcp_interface(interface).await?;
+    }
     match config.runtime.socket_group.as_deref() {
         Some(ACCESS_GROUP) => {}
         Some(other) => bail!("{} already configures runtime.socket_group = {other:?}; refusing to overwrite it with {ACCESS_GROUP:?}", config_path.display()),
@@ -535,6 +564,7 @@ async fn build_plan(
         tui_destination,
         config,
         config_exists,
+        dhcp_client: args.dhcp_client.clone(),
         auth_initialized,
         dependencies,
         init,
@@ -794,6 +824,102 @@ fn package_command(manager: PackageManager, packages: &[&str]) -> Vec<OsString> 
     out
 }
 
+fn require_new_dhcp_config(path: &Path) -> Result<()> {
+    if atomic_file::regular_file_exists(path)? {
+        bail!(
+            "--dhcp-client requires a new configuration; {} already exists. Omit --dhcp-client to use the saved configuration, or edit DHCP settings through the TUI.",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+fn configure_install_dhcp(config: &mut AppConfig, interface: &str) -> Result<()> {
+    crate::config::validate_interface_name(interface)?;
+    config.network.interfaces.insert(
+        interface.to_owned(),
+        InterfaceConfig {
+            role: InterfaceRole::Input,
+            managed: true,
+            ipv4: None,
+            dhcp_client: Some(DhcpClientInterfaceConfig {
+                install_default_route: false,
+                request_dns: false,
+                ..DhcpClientInterfaceConfig::default()
+            }),
+            dhcp: None,
+            wifi: None,
+            wifi_client: None,
+            wifi_concurrent: false,
+            randomize_mac: false,
+            mac_address: None,
+        },
+    );
+    Ok(())
+}
+
+async fn check_install_dhcp_interface(name: &str) -> Result<()> {
+    let network = RtnetlinkNetworkProvider::connect()?;
+    let link = network
+        .list_interfaces()
+        .await?
+        .into_iter()
+        .find(|link| link.name == name)
+        .with_context(|| format!("DHCP interface {name} is absent"))?;
+    if name == "lo" || link.is_wireless || network.mac_address(name).await?.is_none() {
+        bail!("DHCP interface {name} must be a wired Ethernet interface");
+    }
+    if !network.list_ipv4_addresses(name).await?.is_empty() {
+        bail!("DHCP interface {name} already has an IPv4 address. Keep its current network configuration or select a free Ethernet interface.");
+    }
+    let report = traffic_masq_host_observation::scan_conflicts(&[name.to_owned()]).await;
+    validate_install_dhcp_ownership(name, &report)
+}
+
+fn validate_install_dhcp_ownership(
+    name: &str,
+    report: &traffic_masq_host_observation::ConflictReport,
+) -> Result<()> {
+    if !report.incomplete.is_empty() {
+        bail!("could not verify that DHCP interface {name} is free: network ownership observation is incomplete. Review --check-conflicts --interface {name} before retrying.");
+    }
+    let observed = report
+        .interfaces
+        .iter()
+        .find(|interface| interface.name == name)
+        .with_context(|| format!("could not verify network manager state for {name}"))?;
+    for (manager, unmanaged) in [
+        (
+            "NetworkManager",
+            observed.network_manager_managed == Some(false),
+        ),
+        (
+            "systemd-networkd",
+            observed.networkd_state.as_deref() == Some("unmanaged"),
+        ),
+    ] {
+        if !unmanaged
+            && report
+                .processes
+                .iter()
+                .any(|process| process.name == manager)
+        {
+            bail!("could not confirm that {name} is unmanaged by {manager}. Select a free Ethernet interface or leave DHCP setup to the current network manager.");
+        }
+    }
+    // These candidates have no per-interface unmanaged proof in the scanner.
+    // Their presence is uncertainty, rather than proof they own this port.
+    for process in &report.processes {
+        if matches!(
+            process.name.as_str(),
+            "dhclient" | "dhcpcd" | "udhcpc" | "connman" | "wickedd" | "wickedd-nanny"
+        ) {
+            bail!("could not confirm that {name} is unmanaged while {} is running. The installer cannot determine which interfaces it controls; omit --dhcp-client and configure DHCP after verifying interface ownership.", process.name);
+        }
+    }
+    Ok(())
+}
+
 fn print_plan(plan: &InstallPlan) {
     println!("\nInstallation plan:");
     println!(
@@ -819,10 +945,15 @@ fn print_plan(plan: &InstallPlan) {
         plan.config_path.display(),
         if plan.config_exists {
             "preserve existing settings"
+        } else if plan.dhcp_client.is_some() {
+            "create new configuration with a DHCP client"
         } else {
             "create safe defaults with no managed interfaces"
         }
     );
+    if let Some(name) = &plan.dhcp_client {
+        println!("  DHCP client: {name}; request an IPv4 address, omit the default route and DNS");
+    }
     println!(
         "  State: {} (preserved)",
         plan.config.runtime.state_dir.display()
@@ -907,6 +1038,9 @@ async fn apply_plan_inner(plan: &mut InstallPlan, completed: &mut Vec<&'static s
     let store = ServiceStore::host();
     let _installation_lock = store.lock_mutation()?;
     store.ensure_unchanged(plan.init.previous.as_ref())?;
+    if plan.dhcp_client.is_some() {
+        require_new_dhcp_config(&plan.config_path)?;
+    }
     if let Some(previous) = &plan.init.previous {
         store
             .stop(previous, &NativeRunner, Duration::from_secs(60))
@@ -935,6 +1069,9 @@ async fn apply_plan_inner(plan: &mut InstallPlan, completed: &mut Vec<&'static s
         if !remaining.missing.is_empty() {
             bail!("package manager completed, but these dependencies are still unavailable: {}. Package changes were not rolled back; fix the dependency paths or packages and rerun", remaining.missing.join(", "));
         }
+    }
+    if let Some(name) = &plan.dhcp_client {
+        check_install_dhcp_interface(name).await?;
     }
     let access_gid = ensure_group()?;
     completed.push("access group ready");
@@ -1023,7 +1160,10 @@ async fn apply_plan_inner(plan: &mut InstallPlan, completed: &mut Vec<&'static s
         shell_path(&plan.tui_destination),
         shell_path(&plan.config.runtime.socket_path)
     );
-    println!("Next: release only the interfaces you will configure, then select them in Interfaces. A fresh configuration manages no interfaces; dependency presets do not enable routing or Wi-Fi.");
+    if let Some(name) = &plan.dhcp_client {
+        println!("DHCP on {name} needs a reachable DHCP server. Check the lease with `ip -4 addr show dev {name}` or on the DHCP server.");
+    }
+    println!("To configure additional interfaces, release them from their current owner and select them in Interfaces.");
     println!(
         "Recheck a selected interface: {} --check-conflicts --interface NAME",
         shell_path(&plan.tui_destination)
@@ -1105,17 +1245,22 @@ fn write_config(plan: &InstallPlan) -> Result<()> {
         .config_path
         .parent()
         .context("config path has no parent")?;
-    fs::create_dir_all(parent)?;
     let serialized = toml::to_string_pretty(&plan.config)?;
-    if !plan.config_exists
-        || AppConfig::load(&plan.config_path)?
+    if !plan.config_exists || plan.dhcp_client.is_some() {
+        atomic_file::create_dir_all_durable(parent)?;
+        atomic_file::create_new(&plan.config_path, serialized.as_bytes(), 0o640)
+            .with_context(|| format!("failed to create {}", plan.config_path.display()))?;
+    } else {
+        fs::create_dir_all(parent)?;
+        if AppConfig::load(&plan.config_path)?
             .runtime
             .socket_group
             .is_none()
-    {
-        atomic_file::replace(&plan.config_path, serialized.as_bytes(), 0o640)?;
-    } else {
-        fs::set_permissions(&plan.config_path, fs::Permissions::from_mode(0o640))?;
+        {
+            atomic_file::replace(&plan.config_path, serialized.as_bytes(), 0o640)?;
+        } else {
+            fs::set_permissions(&plan.config_path, fs::Permissions::from_mode(0o640))?;
+        }
     }
     chown(
         &plan.config_path,

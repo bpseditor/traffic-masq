@@ -1,6 +1,3 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -387,23 +384,16 @@ async fn stop_daemon(
 }
 
 fn init_config(path: &Path, force: bool) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut options = OpenOptions::new();
-    options.write(true).mode(0o640);
-    if force {
-        options.create(true).truncate(true);
-    } else {
-        options.create_new(true);
-    }
-    let mut file = options
-        .open(path)
-        .map_err(|error| anyhow::anyhow!("failed to create {}: {error}", path.display()))?;
     let contents = toml::to_string_pretty(&AppConfig::default())?;
-    file.write_all(contents.as_bytes())?;
-    file.sync_all()?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o640))?;
+    if let Some(parent) = path.parent() {
+        traffic_masq_atomic_file::create_dir_all_durable(parent)?;
+    }
+    let result = if force {
+        traffic_masq_atomic_file::replace(path, contents.as_bytes(), 0o640)
+    } else {
+        traffic_masq_atomic_file::create_new(path, contents.as_bytes(), 0o640)
+    };
+    result.map_err(|error| anyhow::anyhow!("failed to create {}: {error}", path.display()))?;
     println!("created safe configuration at {}", path.display());
     println!("No interfaces are managed until you add them to this file.");
     Ok(())

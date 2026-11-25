@@ -2,6 +2,17 @@ use super::*;
 use tempfile::tempdir;
 
 #[test]
+fn create_new_preserves_an_existing_file_and_cleans_up_the_temporary() {
+    let directory = tempdir().expect("tempdir");
+    let path = directory.path().join("document.json");
+    create_new(&path, b"first", PRIVATE_FILE_MODE).expect("create");
+    let error = create_new(&path, b"second", PRIVATE_FILE_MODE).expect_err("already present");
+    assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(fs::read(&path).expect("read"), b"first");
+    assert_eq!(fs::read_dir(directory.path()).expect("read_dir").count(), 1);
+}
+
+#[test]
 fn replace_writes_private_contents() {
     let directory = tempdir().expect("tempdir");
     let path = directory.path().join("document.json");

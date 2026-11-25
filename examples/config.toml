@@ -18,6 +18,9 @@ managed = false
 [network.interfaces.wan0]
 role = "input"
 managed = false
+# For a fresh installation on a free Ethernet port, `install --dhcp-client wan0`
+# creates a managed input with DHCP for its IPv4 address, without taking over
+# the default route or requesting DNS. This example keeps wan0 externally managed.
 
 [network.interfaces.wlan0]
 role = "output"

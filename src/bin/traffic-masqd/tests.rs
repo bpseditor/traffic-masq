@@ -44,6 +44,7 @@ fn uninstall_cli_accepts_custom_paths_and_preview() {
     );
 }
 
+use std::fs::{self, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
 
 use tempfile::tempdir;
@@ -63,8 +64,11 @@ fn init_creates_a_private_valid_safe_config_and_refuses_overwrite() {
     let config = AppConfig::load(&path).expect("load initialized config");
     config.validate().expect("valid initialized config");
     assert!(config.network.interfaces.is_empty());
+    fs::write(&path, b"existing configuration").expect("write existing config");
     assert!(init_config(&path, false).is_err());
+    assert_eq!(fs::read(&path).unwrap(), b"existing configuration");
     init_config(&path, true).expect("explicit overwrite");
+    AppConfig::load(&path).expect("load overwritten config");
 }
 
 #[test]

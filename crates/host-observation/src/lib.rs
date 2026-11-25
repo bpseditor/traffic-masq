@@ -20,4 +20,4 @@ mod locks;
 pub use locks::file_lock_diagnostics;
 
 mod report;
-pub use report::{scan_conflicts, ConflictReport};
+pub use report::{scan_conflicts, ConflictReport, InterfaceObservation, ProcessObservation};

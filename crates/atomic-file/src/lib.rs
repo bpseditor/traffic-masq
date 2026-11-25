@@ -253,15 +253,27 @@ fn sync_directory_ancestors(path: &Path) -> io::Result<()> {
 /// does not imply the old file survived. Use [`replace_preserving_on_error`]
 /// for compensation; failed compensation leaves an indeterminate outcome.
 pub fn replace(path: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
-    replace_tracking_publication(path, contents, mode, &mut false)
+    write_tracking_publication(path, contents, mode, Publication::Replace, &mut false)
 }
 
-// Only rename publishes bytes. Failures before it leave the destination intact
+/// Publish a complete new file and sync its directory. Return an error if the
+/// destination already exists. Errors after publication may leave the file present.
+pub fn create_new(path: &Path, contents: &[u8], mode: u32) -> io::Result<()> {
+    write_tracking_publication(path, contents, mode, Publication::Create, &mut false)
+}
+
+enum Publication {
+    Create,
+    Replace,
+}
+
+// Failures before publication leave the destination intact
 // and must not trigger another write on an already failing filesystem.
-fn replace_tracking_publication(
+fn write_tracking_publication(
     path: &Path,
     contents: &[u8],
     mode: u32,
+    publication: Publication,
     published: &mut bool,
 ) -> io::Result<()> {
     #[cfg(any(test, feature = "fault-injection"))]
@@ -306,8 +318,17 @@ fn replace_tracking_publication(
         if fault == 3 {
             return Err(io::Error::other("injected failure before rename"));
         }
-        fs::rename(&temporary, path)?;
-        *published = true;
+        match publication {
+            Publication::Create => {
+                fs::hard_link(&temporary, path)?;
+                *published = true;
+                fs::remove_file(&temporary)?;
+            }
+            Publication::Replace => {
+                fs::rename(&temporary, path)?;
+                *published = true;
+            }
+        }
         #[cfg(any(test, feature = "fault-injection"))]
         if fault == 2 {
             return Err(io::Error::other("injected directory sync failure"));
@@ -371,7 +392,9 @@ pub fn replace_preserving_on_error(path: &Path, contents: &[u8], mode: u32) -> i
     };
 
     let mut published = false;
-    let Err(operation) = replace_tracking_publication(path, contents, mode, &mut published) else {
+    let Err(operation) =
+        write_tracking_publication(path, contents, mode, Publication::Replace, &mut published)
+    else {
         return Ok(());
     };
     if !published {

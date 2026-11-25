@@ -110,8 +110,10 @@ If the installer granted your user socket access, sign out and back in before
 running `traffic-masq` without sudo. The client will still ask for the device
 password.
 
-**A fresh installation manages no interfaces and does not share Internet access
-yet.** Choose which interfaces to configure in the TUI.
+By default, a fresh installation leaves all interfaces under their current
+owners. On a network with a DHCP server, the installer can configure a free
+Ethernet port to obtain a management address. See [installation](docs/usage.md#install).
+Configure Internet sharing separately in the TUI.
 
 To inspect interfaces before installing anything, use the read-only mode:
 

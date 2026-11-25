@@ -120,6 +120,109 @@ fn unattended_defaults_keep_package_installation_and_startup_opt_in() {
     assert_eq!(cli.install.prefix, PathBuf::from("/usr/local"));
     assert!(!cli.install.install_deps);
     assert!(!cli.install.start);
+    assert!(cli.install.dhcp_client.is_none());
+}
+
+#[test]
+fn install_dhcp_generates_address_only_configuration() {
+    let cli = TestCli::try_parse_from(["test", "--dhcp-client", "enp1s0"]).unwrap();
+    let mut config = AppConfig::default();
+    configure_install_dhcp(&mut config, cli.install.dhcp_client.as_deref().unwrap()).unwrap();
+    assert!(configure_install_dhcp(&mut config, "../eth0").is_err());
+    config.validate().unwrap();
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    require_new_dhcp_config(&path).unwrap();
+    fs::write(&path, toml::to_string_pretty(&config).unwrap()).unwrap();
+    assert!(require_new_dhcp_config(&path).is_err());
+    let saved = AppConfig::load(&path).unwrap();
+    assert_eq!(saved.network.interfaces.len(), 1);
+    let interface = &saved.network.interfaces["enp1s0"];
+    assert_eq!(interface.role, InterfaceRole::Input);
+    assert!(interface.managed);
+    assert!(interface.ipv4.is_none());
+    assert!(interface.dhcp.is_none());
+    let specs = crate::dhcp::client::DhcpClientSupervisor::effective_specs(&saved).unwrap();
+    assert_eq!(specs.len(), 1);
+    assert_eq!(specs[0].interface, "enp1s0");
+    assert!(!specs[0].install_default_route);
+    assert!(!specs[0].request_dns);
+    assert!(saved.router.forwarding.is_none());
+}
+
+fn install_dhcp_report(managers: &[&str]) -> traffic_masq_host_observation::ConflictReport {
+    use traffic_masq_host_observation::{ConflictReport, InterfaceObservation, ProcessObservation};
+
+    ConflictReport {
+        interfaces: vec![InterfaceObservation {
+            name: "enp1s0".into(),
+            network_manager_managed: None,
+            networkd_state: None,
+            network_file: None,
+        }],
+        processes: managers
+            .iter()
+            .enumerate()
+            .map(|(index, name)| ProcessObservation {
+                pid: index as u32 + 1,
+                name: (*name).into(),
+                service: None,
+                network_namespace: None,
+            })
+            .collect(),
+        ..ConflictReport::default()
+    }
+}
+
+#[test]
+fn install_dhcp_rejects_clients_and_managers_without_interface_ownership_proof() {
+    for manager in [
+        "dhclient",
+        "dhcpcd",
+        "udhcpc",
+        "connman",
+        "wickedd",
+        "wickedd-nanny",
+    ] {
+        let report = install_dhcp_report(&[manager]);
+        let error = validate_install_dhcp_ownership("enp1s0", &report).unwrap_err();
+        assert!(error.to_string().contains(manager), "{error}");
+    }
+}
+
+#[test]
+fn install_dhcp_rejects_incomplete_or_missing_interface_observation() {
+    let mut report = install_dhcp_report(&[]);
+    validate_install_dhcp_ownership("enp1s0", &report).unwrap();
+    report.incomplete.push("cannot inspect /proc".into());
+    let error = validate_install_dhcp_ownership("enp1s0", &report).unwrap_err();
+    assert!(error.to_string().contains("observation is incomplete"));
+    report.incomplete.clear();
+    report.interfaces.clear();
+    assert!(validate_install_dhcp_ownership("enp1s0", &report).is_err());
+}
+
+#[test]
+fn install_dhcp_requires_explicit_unmanaged_state_for_running_managers() {
+    let mut report = install_dhcp_report(&["NetworkManager", "systemd-networkd"]);
+    assert!(validate_install_dhcp_ownership("enp1s0", &report).is_err());
+    report.interfaces[0].network_manager_managed = Some(true);
+    assert!(validate_install_dhcp_ownership("enp1s0", &report).is_err());
+    report.interfaces[0].network_manager_managed = Some(false);
+    assert!(validate_install_dhcp_ownership("enp1s0", &report).is_err());
+    report.interfaces[0].networkd_state = Some("configured".into());
+    assert!(validate_install_dhcp_ownership("enp1s0", &report).is_err());
+    report.interfaces[0].networkd_state = Some("unmanaged".into());
+    validate_install_dhcp_ownership("enp1s0", &report).unwrap();
+    report.incomplete.push("cannot read PID 42".into());
+    assert!(validate_install_dhcp_ownership("enp1s0", &report).is_err());
+}
+
+#[test]
+fn install_dhcp_does_not_treat_server_processes_as_client_owners() {
+    let report = install_dhcp_report(&["dhcpd", "dnsmasq", "kea-dhcp4"]);
+    validate_install_dhcp_ownership("enp1s0", &report).unwrap();
 }
 
 #[tokio::test]
@@ -142,6 +245,7 @@ fn unattended_requires_explicit_user_and_password_choices() {
         password_file: None,
         defer_password: false,
         start: false,
+        dhcp_client: None,
         init_system: InitSystem::None,
         runit_service_dir: None,
         prefix: "/usr/local".into(),

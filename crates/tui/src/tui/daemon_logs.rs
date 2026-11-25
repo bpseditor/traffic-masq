@@ -234,7 +234,6 @@ pub(crate) async fn handle_key(app: &mut TuiApp, key: KeyCode, client: &ApiClien
     }
 }
 fn export(contents: &str) -> std::io::Result<std::path::PathBuf> {
-    use std::{io::Write, os::unix::fs::OpenOptionsExt};
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -243,13 +242,7 @@ fn export(contents: &str) -> std::io::Result<std::path::PathBuf> {
         "traffic-masq-daemon-{}-{nonce}.log",
         std::process::id()
     ));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)?;
-    file.write_all(contents.as_bytes())?;
-    file.sync_all()?;
+    traffic_masq_atomic_file::create_new(&path, contents.as_bytes(), 0o600)?;
     Ok(path)
 }
 #[cfg(test)]
