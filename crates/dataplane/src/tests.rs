@@ -2067,6 +2067,42 @@ async fn sharing_routes_survive_reopen_rebind_and_drift_without_touching_foreign
 }
 
 #[tokio::test]
+async fn sharing_return_rules_preserve_disjoint_source_subnets_within_one_lan() {
+    let network = FakeNetworkProvider::all_up();
+    let subnets = [
+        "192.168.10.0/25".parse::<ipnet::Ipv4Net>().unwrap(),
+        "192.168.10.128/25".parse().unwrap(),
+    ];
+    let wanted = RouterDataplaneDesired {
+        port_forwards: vec![],
+        forwarding: Some(
+            subnets
+                .iter()
+                .map(|subnet| ForwardingConfig {
+                    from: "lan0".into(),
+                    to: "eth0".into(),
+                    source_subnet: Some(*subnet),
+                    masquerade: true,
+                })
+                .collect(),
+        ),
+    };
+    wanted.validate().unwrap();
+    let state = sharing::desired(&network, &wanted).await.unwrap();
+    sharing::restore(&network, &state).await.unwrap();
+    assert!(sharing::current(&network, &wanted).await.unwrap());
+    let rules = network.rules.lock().unwrap();
+    for ingress in ["eth0", "lo"] {
+        let destinations: std::collections::BTreeSet<_> = rules
+            .iter()
+            .filter(|r| r.input_interface.as_deref() == Some(ingress))
+            .filter_map(|r| r.destination)
+            .collect();
+        assert_eq!(destinations, subnets.into_iter().collect());
+    }
+}
+
+#[tokio::test]
 async fn sharing_conflicts_and_missing_gateway_fail_before_mutation() {
     for conflicting_rule in [false, true] {
         let network = FakeNetworkProvider::all_up();

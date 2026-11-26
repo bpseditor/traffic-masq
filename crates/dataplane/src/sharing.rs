@@ -184,8 +184,8 @@ pub(crate) async fn desired(
             .iter()
             .filter_map(|r| match rule.source_subnet {
                 None => Some(r.destination),
-                Some(source) if source.contains(&r.destination.addr()) => Some(r.destination),
-                Some(source) if r.destination.contains(&source.addr()) => Some(source),
+                Some(source) if r.destination.contains(&source) => Some(source),
+                Some(source) if source.contains(&r.destination) => Some(r.destination),
                 _ => None,
             })
             .collect();
