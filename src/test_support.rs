@@ -521,6 +521,7 @@ impl NetworkProvider for FakeNetworkProvider {
 
     async fn add_ipv4_rule(&self, rule: &Ipv4RuleSpec) -> Result<()> {
         self.rules.lock().await.push(Ipv4RuleInfo {
+            protocol: rule.protocol,
             source: rule.source,
             destination: rule.destination,
             table: rule.table,

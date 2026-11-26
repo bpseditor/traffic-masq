@@ -1264,7 +1264,7 @@ impl RouterTransactionCoordinator {
             self.inner.journal.display()
         );
         let journal = TransactionJournal {
-            version: 3,
+            version: 4,
             base_revision,
             token: token.to_owned(),
             snapshot: snapshot.clone(),
@@ -1365,7 +1365,7 @@ impl RouterTransactionCoordinator {
             .is_some_and(|token| Some(token) == committed_token.as_deref())
         {
             let suffix = match serde_json::from_slice::<TransactionJournal>(&bytes) {
-                Ok(record) if matches!(record.version, 2 | 3) => "stale",
+                Ok(record) if matches!(record.version, 2..=4) => "stale",
                 _ => "corrupt",
             };
             if let Err(error) = self
@@ -1395,7 +1395,7 @@ impl RouterTransactionCoordinator {
             .detail("required_proof", "independent_committed_transaction_token")
             .detail("backup_scope", "complete_state_directory")
         })?;
-        if !matches!(journal.version, 2 | 3) {
+        if !matches!(journal.version, 2..=4) {
             let diagnostic = crate::core::recovery::RecoveryDiagnostic::fatal(
                 crate::core::recovery::StartupRecoveryCode::SupportedSchema,
                 "decode",
@@ -1404,7 +1404,7 @@ impl RouterTransactionCoordinator {
             .journal(self.inner.journal.clone())
             .object("router")
             .detail("journal_schema", journal.version)
-            .detail("supported_schemas", "2,3")
+            .detail("supported_schemas", "2,3,4")
             .detail("fallback_action", "restore_coherent_backup");
             return Err(
                 anyhow::anyhow!("unsupported router transaction journal version")

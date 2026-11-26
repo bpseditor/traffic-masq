@@ -48,6 +48,7 @@ fn route_spec_requires_next_hop_and_explicit_table() {
 #[test]
 fn ipv4_rule_requires_explicit_table_and_selector() {
     let mut rule = Ipv4RuleSpec {
+        protocol: None,
         source: None,
         destination: None,
         table: 100,
@@ -70,6 +71,7 @@ fn ipv4_rule_requires_explicit_table_and_selector() {
 #[test]
 fn ipv4_rule_rejects_mask_without_mark() {
     let rule = Ipv4RuleSpec {
+        protocol: None,
         source: Some("192.0.2.0/24".parse().expect("source")),
         destination: None,
         table: 100,
@@ -296,6 +298,13 @@ fn route_owner_classification_and_display() {
             true,
             false,
             "traffic-masq (dhcp)",
+        ),
+        (
+            203,
+            RouteOwner::TrafficMasqSharing,
+            true,
+            false,
+            "traffic-masq (sharing)",
         ),
         (2, RouteOwner::Kernel, false, false, "[ext:kernel]"),
         (3, RouteOwner::Boot, false, false, "[ext:boot]"),

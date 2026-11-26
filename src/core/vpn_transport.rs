@@ -48,6 +48,7 @@ impl VpnTransportPlan {
             mark,
             upstream: upstream.into(),
             rule: Ipv4RuleSpec {
+                protocol: None,
                 source: None,
                 destination: None,
                 table,
@@ -194,6 +195,7 @@ impl VpnTransportPlan {
 
     fn rule_info(&self) -> crate::netlink::Ipv4RuleInfo {
         crate::netlink::Ipv4RuleInfo {
+            protocol: None,
             source: self.rule.source,
             destination: self.rule.destination,
             table: self.rule.table,

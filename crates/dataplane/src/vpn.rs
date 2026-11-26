@@ -188,7 +188,7 @@ where
             &self.executor,
             &output,
             NFT_VPN_TABLE,
-            NFT_VPN_TABLE_COMMENT,
+            &[NFT_VPN_TABLE_COMMENT],
         )?;
         parse_owned_vpn_firewall_state(&output)
     }

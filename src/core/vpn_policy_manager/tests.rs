@@ -169,6 +169,7 @@ impl NetworkProvider for FakeNetwork {
 
     async fn add_ipv4_rule(&self, rule: &Ipv4RuleSpec) -> Result<()> {
         self.rules.lock().unwrap().push(Ipv4RuleInfo {
+            protocol: None,
             source: rule.source,
             destination: rule.destination,
             table: rule.table,
@@ -420,6 +421,7 @@ async fn activate_fails_closed_when_active_interface_does_not_match_desired() {
 async fn activate_refuses_when_foreign_rule_occupies_reserved_space() {
     let network = FakeNetwork::with_interface(OWNED_INTERFACE_NAME, 42);
     network.rules.lock().unwrap().push(Ipv4RuleInfo {
+        protocol: None,
         source: None,
         destination: None,
         table: 254,
@@ -572,6 +574,7 @@ async fn failed_deactivation_restores_routes_and_rules() {
 async fn deactivate_is_robust_when_tunnel_interface_is_already_gone() {
     let network = Arc::new(FakeNetwork::default());
     network.rules.lock().unwrap().push(Ipv4RuleInfo {
+        protocol: None,
         source: None,
         destination: None,
         table: 30_100,

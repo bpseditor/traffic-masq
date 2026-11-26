@@ -553,8 +553,14 @@ include the routes and settings you want to retain in `set_router`.
 A forwarding rule accepts optional `source_subnet`, a network CIDR without host
 bits such as `"192.168.50.0/24"`. `masquerade` defaults to `true`. Omitted or
 `null` `forwarding` grants no forwarding permissions, as does `[]`. Explicit
-forwarding requires direct global VPN policy. VPN chains require explicit
-connection permissions too. See the [router configuration reference](configuration.md#router)
+forwarding requires direct global VPN policy. `to` pins matching forwarded IPv4
+traffic to that exit and installs return routing; the exit needs an existing IPv4
+default route. Earlier conflicting policy rules reject apply. Overlapping scopes
+on one ingress cannot select different exits. VPN chains require explicit
+connection permissions too; their kill switches remain authoritative.
+Derived routes report owner `traffic_masq_sharing` (protocol 203); edit their
+sharing connection rather than treating them as static routes. Update client and
+daemon together so both recognize this owner. See the [router configuration reference](configuration.md#router)
 for uplink, static-route and VPN-chain fields.
 
 `ApiHttpsSettings`

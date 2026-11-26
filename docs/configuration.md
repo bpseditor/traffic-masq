@@ -146,8 +146,13 @@ allow_default_route_change = false
 (in JSON) disable connection forwarding; no implicit NAT rules are generated. Each rule
 requires different `from` and `to` interfaces, defaults `masquerade` to `true`,
 and optionally restricts traffic with `source_subnet` (a network CIDR without
-host bits). Overlapping rules for the same interface pair are rejected.
-Forwarding does not create addresses, upstream routes or VPN tunnels.
+host bits). Overlapping source scopes on the same ingress are rejected, including
+rules selecting different exits. `to` selects the forwarding route as well as
+firewall/NAT permission. Sharing derives private policy tables from the selected
+exit's existing routes/default gateway and installs client return routes; it does
+not create interface addresses, an upstream connection or a VPN tunnel. Router
+to-client traffic also uses the LAN route; router Internet policy and foreign VPN
+objects are preserved. Loopback is not a sharing endpoint.
 See [Internet sharing](usage.md#routes-and-internet-sharing) for firewall behavior.
 
 ### Port forwarding

@@ -122,6 +122,8 @@ fn format_owner_badge_styles_appropriately() {
     assert_eq!(static_badge.content, "traffic-masq");
     assert_eq!(static_badge.style.fg, Some(theme::GOOD));
 
+    let sharing_badge = format_owner_badge(RouteOwner::TrafficMasqSharing);
+    assert_eq!(sharing_badge.content, "traffic-masq (sharing)");
     let dhcp_badge = format_owner_badge(RouteOwner::TrafficMasqDhcp);
     assert_eq!(dhcp_badge.content, "traffic-masq (dhcp)");
     assert_eq!(dhcp_badge.style.fg, Some(theme::ACCENT));

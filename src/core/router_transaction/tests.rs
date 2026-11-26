@@ -104,6 +104,7 @@ struct FakeSubsystems {
     drifted: StdMutex<bool>,
     retained: StdMutex<Vec<Vec<String>>>,
     rollback_secret: StdMutex<Option<std::path::PathBuf>>,
+    restored_sharing: StdMutex<Vec<crate::firewall::sharing::SharingRoutingSnapshot>>,
 }
 
 impl FakeSubsystems {
@@ -125,6 +126,7 @@ impl FakeSubsystems {
             drifted: StdMutex::new(false),
             retained: StdMutex::new(Vec::new()),
             rollback_secret: StdMutex::new(None),
+            restored_sharing: Default::default(),
         })
     }
 
@@ -173,6 +175,7 @@ impl FakeSubsystems {
 
     fn dataplane_snapshot(&self) -> RouterDataplaneSnapshot {
         RouterDataplaneSnapshot {
+            sharing: Default::default(),
             ipv4_forwarding: *self.drifted.lock().unwrap(),
             owned: None,
             owned_firewall_integrity: crate::firewall::OwnedFirewallIntegrity::Intact,
@@ -309,7 +312,19 @@ impl RouterSubsystems for FakeSubsystems {
     async fn rollback_dhcp_scoped(&self, _: &[DhcpServiceSpec], _: &[String]) -> Result<()> {
         self.fail_if_matched("rollback_dhcp", &self.rollback_fail)
     }
-    async fn rollback_dataplane(&self, _: &RouterDataplaneSnapshot) -> Result<()> {
+    async fn refresh_restored_dataplane(&self, _: &RouterDataplaneSnapshot) -> Result<()> {
+        self.fail_if_matched("refresh_restored_dataplane", &self.rollback_fail)
+    }
+    async fn rollback_dataplane(&self, snapshot: &RouterDataplaneSnapshot) -> Result<()> {
+        self.restored_sharing
+            .lock()
+            .unwrap()
+            .push(snapshot.sharing.clone());
+        if !snapshot.sharing.is_empty() && !self.events().iter().any(|e| e == "rollback_interfaces")
+        {
+            self.record("rollback_dataplane")?;
+            anyhow::bail!("saved sharing exit is not restored yet");
+        }
         self.fail_if_matched("rollback_dataplane", &self.rollback_fail)
     }
     async fn health_interfaces(&self, _: &crate::core::router::RouterDesired) -> Result<()> {
@@ -2230,4 +2245,88 @@ async fn operator_cancel_failure_retains_recovery_until_explicit_retry() {
     let next = coordinator.apply(plan).await.unwrap();
     coordinator.commit(&next).await.unwrap();
     assert_eq!(overrides.committed_revision().await, 1);
+}
+
+#[tokio::test]
+async fn sharing_snapshot_reopens_and_finalization_failure_retains_recovery_until_retry() {
+    let fake = FakeSubsystems::new();
+    let (coordinator, overrides, directory) = coordinator_with(fake.clone()).await;
+    let candidate = build_candidate(&overrides).await;
+    let mut snapshot = coordinator
+        .manager()
+        .snapshot_for(candidate.desired())
+        .await
+        .unwrap();
+    assert!(
+        serde_json::to_value(&snapshot).unwrap()["dataplane"]
+            .get("sharing")
+            .is_none(),
+        "empty sharing snapshots must preserve legacy recovery fingerprints"
+    );
+    snapshot.dataplane.sharing = serde_json::from_value(serde_json::json!({
+        "routes": [], "interfaces": {}, "rules": [{
+            "protocol": 203, "source": "192.168.10.0/24", "destination": null,
+            "table": 1409286145u32, "priority": 5001,
+            "fw_mark": null, "fw_mask": null, "input_interface": "lan0", "output_interface": null
+        }]
+    }))
+    .unwrap();
+    coordinator
+        .write_journal(
+            candidate.base_revision(),
+            "sharing-restart",
+            &snapshot,
+            candidate.desired(),
+        )
+        .await
+        .unwrap();
+    let recorded: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&coordinator.inner.journal).unwrap()).unwrap();
+    assert_eq!(recorded["version"], 4);
+    let reopened = RuntimeOverrideManager::load(directory.path(), &base_config())
+        .await
+        .unwrap();
+    let restored = RouterTransactionCoordinator::new(
+        coordinator.manager(),
+        reopened.clone(),
+        Duration::from_secs(60),
+    );
+    fake.fail_rollback("refresh_restored_dataplane");
+    assert!(restored.recover().await.is_err());
+    assert!(restored.inner.journal.exists());
+    assert_eq!(
+        fake.restored_sharing.lock().unwrap().last(),
+        Some(&snapshot.dataplane.sharing)
+    );
+    let events = fake.events();
+    assert!(fake.restored_sharing.lock().unwrap().len() >= 2);
+    assert!(
+        events
+            .iter()
+            .rposition(|e| e == "rollback_dataplane")
+            .unwrap()
+            > events
+                .iter()
+                .position(|e| e == "rollback_interfaces")
+                .unwrap()
+    );
+    assert!(
+        events
+            .iter()
+            .position(|e| e == "rollback_uplink_dhcp")
+            .unwrap()
+            < events
+                .iter()
+                .position(|e| e == "refresh_restored_dataplane")
+                .unwrap()
+    );
+    *fake.rollback_fail.lock().unwrap() = None;
+    restored.rollback().await.unwrap();
+    assert!(!restored.inner.journal.exists());
+    let plan = restored
+        .plan(build_candidate(&reopened).await)
+        .await
+        .unwrap();
+    let token = restored.apply(plan).await.unwrap();
+    restored.commit(&token).await.unwrap();
 }

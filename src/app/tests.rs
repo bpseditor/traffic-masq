@@ -467,6 +467,7 @@ impl Default for FakeDataplaneProvider {
     fn default() -> Self {
         Self {
             state: Arc::new(Mutex::new(RouterDataplaneSnapshot {
+                sharing: Default::default(),
                 ipv4_forwarding: false,
                 owned: None,
                 owned_firewall_integrity: OwnedFirewallIntegrity::Intact,
@@ -1815,6 +1816,7 @@ async fn apply_vpn_policy_startup_deactivates_leftover_policy_in_direct_mode() {
 
     let network = Arc::new(FakeNetworkProvider::default());
     network.rules.lock().await.push(Ipv4RuleInfo {
+        protocol: None,
         source: None,
         destination: None,
         table: 30_100,

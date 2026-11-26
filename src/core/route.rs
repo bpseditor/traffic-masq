@@ -359,6 +359,11 @@ impl RouteManager {
         let mut resolved = Vec::with_capacity(desired.len());
 
         for route in desired {
+            anyhow::ensure!(
+                !traffic_masq_dataplane::sharing::is_reserved_table(route.table),
+                "routing table {} is reserved for Internet sharing",
+                route.table
+            );
             anyhow::ensure!(!reserved_vpn_table(route.table),
                 "routing table {} is reserved for VPN policy; configure VPN policy through its coordinator", route.table);
             let output_interface_index = match route.output_interface.as_deref() {
@@ -458,7 +463,9 @@ pub(crate) fn reserved_vpn_table(table: u32) -> bool {
 }
 
 fn static_route_owned(route: &Ipv4RouteInfo) -> bool {
-    route.protocol == TRAFFIC_MASQ_ROUTE_PROTOCOL && !reserved_vpn_table(route.table)
+    route.protocol == TRAFFIC_MASQ_ROUTE_PROTOCOL
+        && !reserved_vpn_table(route.table)
+        && !traffic_masq_dataplane::sharing::is_reserved_table(route.table)
 }
 
 #[cfg(test)]

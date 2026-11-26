@@ -834,6 +834,11 @@ impl OwnedIpv4RouteConfig {
         if self.table == 255 {
             bail!("IPv4 route table must not be RT_TABLE_LOCAL (255)");
         }
+        anyhow::ensure!(
+            !traffic_masq_dataplane::sharing::is_reserved_table(self.table),
+            "IPv4 route table {} is reserved for Internet sharing",
+            self.table
+        );
         if self.destination.prefix_len() > 32 {
             bail!(
                 "invalid IPv4 prefix length {}",

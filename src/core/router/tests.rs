@@ -371,6 +371,7 @@ impl FakeSubsystems {
 
 fn dataplane_snapshot() -> RouterDataplaneSnapshot {
     RouterDataplaneSnapshot {
+        sharing: Default::default(),
         ipv4_forwarding: false,
         owned: None,
         owned_firewall_integrity: OwnedFirewallIntegrity::Intact,

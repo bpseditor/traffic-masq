@@ -637,6 +637,7 @@ fn sharing_editor_and_preview_show_both_current_endpoint_states_at_minimum_size(
     let rendered = text(&terminal);
     assert!(rendered.contains("Current: lan0 · UP · traffic-masq:on"));
     assert!(rendered.contains("Current: wan0 · DOWN · traffic-masq:off"));
+    assert!(rendered.contains("Client traffic uses this exit"));
 }
 
 #[tokio::test]

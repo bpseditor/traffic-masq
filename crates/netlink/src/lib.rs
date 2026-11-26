@@ -122,6 +122,7 @@ fn ipv4_route_dump_message() -> RouteMessage {
 pub const TRAFFIC_MASQ_ROUTE_PROTOCOL: u8 = 201;
 
 pub const TRAFFIC_MASQ_DHCP_ROUTE_PROTOCOL: u8 = 202;
+pub const TRAFFIC_MASQ_SHARING_ROUTE_PROTOCOL: u8 = 203;
 
 /// The ownership traffic-masq claims for an address it is about to install.
 ///
@@ -196,14 +197,15 @@ pub struct Ipv4RouteSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RouteOwner {
-    TrafficMasqStatic, // proto 201 (TRAFFIC_MASQ_ROUTE_PROTOCOL)
-    TrafficMasqDhcp,   // proto 202 (TRAFFIC_MASQ_DHCP_ROUTE_PROTOCOL)
-    Kernel,            // proto 2 (RTPROT_KERNEL)
-    Boot,              // proto 3 (RTPROT_BOOT)
-    Static,            // proto 4 (RTPROT_STATIC)
-    Dhcp,              // proto 16 (RTPROT_DHCP)
-    Foreign(u8),       // other rt_proto
-    Untagged,          // RTPROT_UNSPEC (0)
+    TrafficMasqSharing, // proto 203 (derived sharing policy routes)
+    TrafficMasqStatic,  // proto 201 (TRAFFIC_MASQ_ROUTE_PROTOCOL)
+    TrafficMasqDhcp,    // proto 202 (TRAFFIC_MASQ_DHCP_ROUTE_PROTOCOL)
+    Kernel,             // proto 2 (RTPROT_KERNEL)
+    Boot,               // proto 3 (RTPROT_BOOT)
+    Static,             // proto 4 (RTPROT_STATIC)
+    Dhcp,               // proto 16 (RTPROT_DHCP)
+    Foreign(u8),        // other rt_proto
+    Untagged,           // RTPROT_UNSPEC (0)
 }
 
 impl RouteOwner {
@@ -216,12 +218,16 @@ impl RouteOwner {
             16 => Self::Dhcp,
             TRAFFIC_MASQ_ROUTE_PROTOCOL => Self::TrafficMasqStatic,
             TRAFFIC_MASQ_DHCP_ROUTE_PROTOCOL => Self::TrafficMasqDhcp,
+            TRAFFIC_MASQ_SHARING_ROUTE_PROTOCOL => Self::TrafficMasqSharing,
             other => Self::Foreign(other),
         }
     }
 
     pub fn is_owned(self) -> bool {
-        matches!(self, Self::TrafficMasqStatic | Self::TrafficMasqDhcp)
+        matches!(
+            self,
+            Self::TrafficMasqStatic | Self::TrafficMasqDhcp | Self::TrafficMasqSharing
+        )
     }
 
     pub fn is_editable(self) -> bool {
@@ -234,6 +240,7 @@ impl std::fmt::Display for RouteOwner {
         match self {
             Self::TrafficMasqStatic => write!(f, "traffic-masq"),
             Self::TrafficMasqDhcp => write!(f, "traffic-masq (dhcp)"),
+            Self::TrafficMasqSharing => write!(f, "traffic-masq (sharing)"),
             Self::Kernel => write!(f, "[ext:kernel]"),
             Self::Boot => write!(f, "[ext:boot]"),
             Self::Static => write!(f, "[ext:static]"),
@@ -263,6 +270,8 @@ impl Ipv4RouteInfo {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ipv4RuleSpec {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<u8>,
     pub source: Option<ipnet::Ipv4Net>,
     pub destination: Option<ipnet::Ipv4Net>,
     pub table: u32,
@@ -275,6 +284,8 @@ pub struct Ipv4RuleSpec {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ipv4RuleInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<u8>,
     pub source: Option<ipnet::Ipv4Net>,
     pub destination: Option<ipnet::Ipv4Net>,
     pub table: u32,
@@ -443,6 +454,20 @@ pub trait NetworkProvider: Send + Sync {
         anyhow::bail!("IPv4 route lookup is not supported by this network provider")
     }
 
+    /// Reject foreign or unsupported objects before allocating a policy-routing namespace.
+    /// Production inspects raw messages too: omitted selectors are not absence proof.
+    async fn check_ipv4_policy_namespace(
+        &self,
+        prefix: u32,
+        mask: u32,
+        priority: u32,
+        protocol: u8,
+    ) -> Result<()> {
+        let routes = self.list_ipv4_routes().await?;
+        let rules = self.list_ipv4_rules().await?;
+        check_policy_namespace(&routes, &rules, prefix, mask, priority, protocol)
+    }
+
     /// Observe IPv4 routes; unsupported/error results are not an empty inventory.
     async fn list_ipv4_routes(&self) -> Result<Vec<Ipv4RouteInfo>> {
         anyhow::bail!("IPv4 route observation is not supported by this network provider")
@@ -578,6 +603,18 @@ where
 
     async fn lookup_ipv4_route(&self, destination: Ipv4Addr) -> Result<Option<Ipv4RouteInfo>> {
         (**self).lookup_ipv4_route(destination).await
+    }
+
+    async fn check_ipv4_policy_namespace(
+        &self,
+        prefix: u32,
+        mask: u32,
+        priority: u32,
+        protocol: u8,
+    ) -> Result<()> {
+        (**self)
+            .check_ipv4_policy_namespace(prefix, mask, priority, protocol)
+            .await
     }
 
     async fn list_ipv4_routes(&self) -> Result<Vec<Ipv4RouteInfo>> {
@@ -848,6 +885,7 @@ fn parse_ipv4_rule(message: &RuleMessage) -> Result<Option<Ipv4RuleInfo>> {
     let mut fw_mask = None;
     let mut input_interface = None;
     let mut output_interface = None;
+    let mut protocol = None;
     let mut unsupported = false;
 
     for attribute in &message.attributes {
@@ -865,7 +903,11 @@ fn parse_ipv4_rule(message: &RuleMessage) -> Result<Option<Ipv4RuleInfo>> {
             RuleAttribute::Iifname(name) => input_interface = Some(name.clone()),
             RuleAttribute::Oifname(name) => output_interface = Some(name.clone()),
 
-            RuleAttribute::Protocol(_) => {}
+            RuleAttribute::Protocol(value) => {
+                if !matches!(value, RouteProtocol::Unspec | RouteProtocol::Boot) {
+                    protocol = Some(u8::from(*value));
+                }
+            }
             RuleAttribute::SuppressPrefixLen(u32::MAX) => {}
 
             RuleAttribute::SuppressPrefixLen(_)
@@ -896,6 +938,7 @@ fn parse_ipv4_rule(message: &RuleMessage) -> Result<Option<Ipv4RuleInfo>> {
     }
 
     let info = Ipv4RuleInfo {
+        protocol,
         source,
         destination,
         table,
@@ -1212,6 +1255,76 @@ impl NetworkProvider for RtnetlinkNetworkProvider {
         }
     }
 
+    async fn check_ipv4_policy_namespace(
+        &self,
+        prefix: u32,
+        mask: u32,
+        priority: u32,
+        protocol: u8,
+    ) -> Result<()> {
+        let _request = self.request_lock.lock().await;
+        let mut routes = Vec::new();
+        let mut messages = self.handle.route().get(ipv4_route_dump_message()).execute();
+        while let Some(message) = messages.try_next().await? {
+            let table = message
+                .attributes
+                .iter()
+                .find_map(|a| {
+                    if let RouteAttribute::Table(t) = a {
+                        Some(*t)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(u32::from(message.header.table));
+            if table & mask == prefix {
+                routes.push(
+                    parse_ipv4_route(&message)?
+                        .context("unsupported object occupies policy route table")?,
+                );
+            }
+        }
+        let mut rules = Vec::new();
+        let mut messages = self.handle.rule().get(IpVersion::V4).execute();
+        while let Some(message) = messages.try_next().await? {
+            let table = message
+                .attributes
+                .iter()
+                .find_map(|a| {
+                    if let RuleAttribute::Table(t) = a {
+                        Some(*t)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(u32::from(message.header.table));
+            let pref = message
+                .attributes
+                .iter()
+                .find_map(|a| {
+                    if let RuleAttribute::Priority(p) = a {
+                        Some(*p)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
+            if table & mask == prefix || pref <= priority {
+                anyhow::ensure!(
+                    // Permanent/unresolved/detached are kernel bookkeeping,
+                    // not packet selectors. Inversion and unknown flags are unsafe.
+                    message.header.flags.bits() & !0x1d == 0,
+                    "unsupported policy rule flags precede or overlap sharing routing"
+                );
+                rules.push(
+                    parse_ipv4_rule(&message)?
+                        .context("unsupported rule precedes or overlaps sharing routing")?,
+                );
+            }
+        }
+        check_policy_namespace(&routes, &rules, prefix, mask, priority, protocol)
+    }
+
     async fn list_ipv4_routes(&self) -> Result<Vec<Ipv4RouteInfo>> {
         let _request = self.request_lock.lock().await;
         let mut messages = self.handle.route().get(ipv4_route_dump_message()).execute();
@@ -1373,6 +1486,12 @@ impl NetworkProvider for RtnetlinkNetworkProvider {
                 .attributes
                 .push(RuleAttribute::FwMask(fw_mask));
         }
+        if let Some(protocol) = rule.protocol {
+            request
+                .message_mut()
+                .attributes
+                .push(RuleAttribute::Protocol(RouteProtocol::from(protocol)));
+        }
         request.execute().await.with_context(|| {
             format!(
                 "RTM_NEWRULE while adding IPv4 rule for table {}",
@@ -1412,6 +1531,40 @@ impl NetworkProvider for RtnetlinkNetworkProvider {
             })?;
         Ok(())
     }
+}
+
+fn check_policy_namespace(
+    routes: &[Ipv4RouteInfo],
+    rules: &[Ipv4RuleInfo],
+    prefix: u32,
+    mask: u32,
+    priority: u32,
+    protocol: u8,
+) -> Result<()> {
+    for route in routes.iter().filter(|r| r.table & mask == prefix) {
+        anyhow::ensure!(
+            route.protocol == protocol,
+            "foreign route occupies policy table {}",
+            route.table
+        );
+    }
+    for rule in rules {
+        if rule.table == 255
+            && rule.priority.unwrap_or(0) == 0
+            && rule.source.is_none()
+            && rule.destination.is_none()
+            && rule.input_interface.is_none()
+            && rule.output_interface.is_none()
+            && rule.fw_mark.is_none()
+        {
+            continue;
+        }
+        if rule.table & mask == prefix || rule.priority.unwrap_or(0) <= priority {
+            anyhow::ensure!(rule.protocol == Some(protocol) && rule.table & mask == prefix,
+                "foreign rule precedes or overlaps sharing routing (priority {:?}, table {}); preserve it and resolve the policy conflict before applying", rule.priority, rule.table);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

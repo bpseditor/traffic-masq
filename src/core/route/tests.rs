@@ -544,3 +544,33 @@ async fn static_route_apply_health_and_recovery_preserve_vpn_policy_tables() {
         assert!(manager.plan(&[desired], true).await.is_err());
     }
 }
+
+#[tokio::test]
+async fn sharing_namespace_is_never_adopted_by_the_static_route_owner() {
+    let provider = Arc::new(FakeNetwork::default());
+    let mut sharing = route("192.0.2.0/24", 203);
+    sharing.table = 0x5400_0001;
+    let mut conflicting = sharing.clone();
+    conflicting.protocol = TRAFFIC_MASQ_ROUTE_PROTOCOL;
+    provider
+        .routes
+        .lock()
+        .await
+        .extend([sharing.clone(), conflicting.clone()]);
+    let manager = RouteManager::new(provider.clone());
+    manager.apply(&[], false).await.unwrap();
+    assert_eq!(*provider.routes.lock().await, vec![sharing, conflicting]);
+    let desired = ManagedIpv4Route {
+        destination: "198.51.100.0/24".parse().unwrap(),
+        gateway: None,
+        output_interface: Some("eth0".into()),
+        table: 0x5400_0001,
+        metric: None,
+    };
+    assert!(manager
+        .plan(&[desired], false)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("reserved for Internet sharing"));
+}

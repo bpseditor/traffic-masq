@@ -164,6 +164,18 @@ impl RouterNamespaceFixture {
             ],
         )?;
 
+        run(
+            "ip",
+            &[
+                "route",
+                "add",
+                "default",
+                "via",
+                UPSTREAM_ADDR,
+                "dev",
+                &self.uplink_if,
+            ],
+        )?;
         Ok(())
     }
 
@@ -192,6 +204,7 @@ impl RouterNamespaceFixture {
                 }
                 if let Some(child) = &mut self.daemon {
                     if let Ok(Some(status)) = child.try_wait() {
+                        self.dump_state_on_failure("daemon exited during startup");
                         panic!("traffic-masqd exited during startup with status {status}");
                     }
                 }

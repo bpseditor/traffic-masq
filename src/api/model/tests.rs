@@ -387,6 +387,7 @@ fn router_plan_view_preserves_complete_wire_shape() {
         },
         dataplane: RouterDataplanePlan {
             snapshot: RouterDataplaneSnapshot {
+                sharing: Default::default(),
                 ipv4_forwarding: false,
                 owned: None,
                 owned_firewall_integrity: OwnedFirewallIntegrity::Intact,

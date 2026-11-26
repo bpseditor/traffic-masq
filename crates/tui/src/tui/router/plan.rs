@@ -115,6 +115,9 @@ pub(crate) fn render_router_plan(frame: &mut ratatui::Frame<'_>, area: Rect, app
                 rule.to,
                 if rule.masquerade { "NAT" } else { "no NAT" }
             )));
+            lines.push(Line::from(
+                "  Client traffic uses this exit; reply routes are restored too.",
+            ));
             lines.push(Line::from(format!(
                 "  source {}",
                 rule.source_subnet
@@ -209,6 +212,11 @@ pub(crate) fn render_router_plan(frame: &mut ratatui::Frame<'_>, area: Rect, app
             )));
         }
         if let Some(connections) = &desired.forwarding {
+            if !connections.is_empty() {
+                lines.push(Line::from(
+                    "Sharing routes pin each exit; router Internet policy is preserved.",
+                ));
+            }
             for connection in connections {
                 lines.push(Line::from(format!(
                     "Share: {} → {} ({}, source {})",

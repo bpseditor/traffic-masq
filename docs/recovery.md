@@ -684,8 +684,14 @@ Current runtime overrides write schema 5 and accept schemas 4 and 5. Schema 5
 stores standalone VPN profile selection together with enablement, traffic policy,
 revision and the router commit token. Schema 4 loads without a standalone intent;
 its existing ownership record continues to govern the legacy tunnel until an
-operator confirms a standalone change. Router transaction journals write schema 3
-and accept 2 and 3; schema 3 adds standalone tunnel and policy snapshots. Interface
+operator confirms a standalone change. Router transaction journals write schema 4
+and accept 2, 3 and 4; schema 3 adds standalone tunnel and policy snapshots and
+schema 4 adds sharing policy-routing snapshots. Missing sharing state in older
+journals means no pre-existing sharing routes. Empty snapshots preserve legacy
+recovery fingerprints. Sharing nftables markers migrate from v1 to v2 on apply.
+Older daemons reject schema 4 and the v2 runtime table: finish pending recovery
+and remove sharing and port forwards with the new daemon before downgrading. Do not flush foreign
+VPN tables or remove journals to bypass these checks. Interface
 journals remain schema 3, provisioning secret journals schema 2, and Wi-Fi process
 ownership records schema 2. Unsupported unresolved evidence is retained and fenced.
 

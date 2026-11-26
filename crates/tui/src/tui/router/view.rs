@@ -8,7 +8,7 @@ pub(super) fn format_owner_badge(owner: RouteOwner) -> Span<'static> {
                 .fg(theme::GOOD)
                 .add_modifier(Modifier::BOLD),
         ),
-        RouteOwner::TrafficMasqDhcp => {
+        RouteOwner::TrafficMasqDhcp | RouteOwner::TrafficMasqSharing => {
             Span::styled(owner.to_string(), Style::default().fg(theme::ACCENT))
         }
         _ => Span::styled(owner.to_string(), Style::default().fg(theme::WARN)),

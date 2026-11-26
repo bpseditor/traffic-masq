@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum RouteOwnerView {
     TrafficMasqStatic,
+    TrafficMasqSharing,
     TrafficMasqDhcp,
     Kernel,
     Boot,
@@ -28,12 +29,16 @@ impl RouteOwnerView {
             16 => Self::Dhcp,
             201 => Self::TrafficMasqStatic,
             202 => Self::TrafficMasqDhcp,
+            203 => Self::TrafficMasqSharing,
             other => Self::Foreign(other),
         }
     }
 
     pub fn is_owned(self) -> bool {
-        matches!(self, Self::TrafficMasqStatic | Self::TrafficMasqDhcp)
+        matches!(
+            self,
+            Self::TrafficMasqStatic | Self::TrafficMasqDhcp | Self::TrafficMasqSharing
+        )
     }
 
     pub fn is_editable(self) -> bool {
@@ -46,6 +51,7 @@ impl std::fmt::Display for RouteOwnerView {
         match self {
             Self::TrafficMasqStatic => write!(formatter, "traffic-masq"),
             Self::TrafficMasqDhcp => write!(formatter, "traffic-masq (dhcp)"),
+            Self::TrafficMasqSharing => write!(formatter, "traffic-masq (sharing)"),
             Self::Kernel => write!(formatter, "[ext:kernel]"),
             Self::Boot => write!(formatter, "[ext:boot]"),
             Self::Static => write!(formatter, "[ext:static]"),

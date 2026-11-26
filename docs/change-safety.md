@@ -129,6 +129,12 @@ acknowledgement is not restoration proof. Confirmation, rollback and blocking
 workers are not interrupted by this signal. If completion races cancellation,
 clients inspect the original result and current/pending state before another write.
 
+Explicit sharing owns policy routing for its selected exit and client return
+paths, under the existing dataplane stage. Snapshot tagged rules/routes before
+changes, preserve foreign VPN rules, and refresh copied gateways after prior
+interfaces/DHCP have been restored. Failure of that finalization retains recovery.
+Accepted sharing workers keep the nft operation reservation until writes finish.
+
 ## Durable evidence and compatibility
 
 Use the shared [atomic-file primitives](../crates/atomic-file/src/lib.rs) for

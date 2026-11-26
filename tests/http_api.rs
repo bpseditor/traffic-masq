@@ -622,6 +622,7 @@ impl FakeRouterSubsystems {
 
 fn fake_dataplane_snapshot() -> RouterDataplaneSnapshot {
     RouterDataplaneSnapshot {
+        sharing: Default::default(),
         ipv4_forwarding: true,
         owned: None,
         owned_firewall_integrity: OwnedFirewallIntegrity::Intact,
@@ -1772,6 +1773,7 @@ impl NetworkProvider for FakePolicyNetwork {
             .lock()
             .unwrap()
             .push(traffic_masq::netlink::Ipv4RuleInfo {
+                protocol: None,
                 source: rule.source,
                 destination: rule.destination,
                 table: rule.table,
@@ -2900,6 +2902,7 @@ impl traffic_masq::firewall::RouterDataplaneProvider for HttpDataplane {
         desired: &traffic_masq::firewall::RouterDataplaneDesired,
     ) -> Result<()> {
         *self.0.lock().unwrap() = Some(RouterDataplaneSnapshot {
+            sharing: Default::default(),
             ipv4_forwarding: true,
             owned: Some(desired.clone()),
             owned_firewall_integrity: OwnedFirewallIntegrity::Intact,

@@ -14,6 +14,7 @@ use std::fs;
 use traffic_masq_netlink::NetworkProvider;
 
 mod port_forwarding;
+pub mod sharing;
 mod view;
 pub use traffic_masq_protocol::{PortForwardConfig, PortForwardProtocol};
 pub mod vpn;
@@ -21,7 +22,8 @@ pub mod vpn;
 const IPV4_FORWARDING_PATH: &str = "/proc/sys/net/ipv4/ip_forward";
 const NFT_FAMILY: &str = "inet";
 const NFT_TABLE: &str = "traffic_masq";
-const NFT_TABLE_COMMENT: &str = "traffic-masq:v1";
+const NFT_TABLE_COMMENT: &str = "traffic-masq:v2";
+const LEGACY_NFT_TABLE_COMMENT: &str = "traffic-masq:v1";
 const NFT_METADATA_COMMENT_PREFIX: &str = "traffic-masq:v1:part:";
 const NFT_METADATA_HEX_CHUNK_LEN: usize = 96;
 
@@ -96,7 +98,7 @@ fn parse_ipv4_forwarding(value: &[u8]) -> Result<bool> {
 }
 
 /// A directional permission to forward IPv4 traffic between existing interfaces.
-/// Routing selects the egress; this rule does not create routes or VPN tunnels.
+/// Sharing installs owned policy routes selecting the egress; it does not create tunnels.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ForwardingConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -293,7 +295,12 @@ where
             .executor
             .execute(&["--json", "list", "ruleset"], &[])
             .context("failed to observe nftables ruleset")?;
-        let output = recover_table_comment(&self.executor, &output, NFT_TABLE, NFT_TABLE_COMMENT)?;
+        let output = recover_table_comment(
+            &self.executor,
+            &output,
+            NFT_TABLE,
+            &[NFT_TABLE_COMMENT, LEGACY_NFT_TABLE_COMMENT],
+        )?;
         parse_owned_nftables_state(&output)
     }
 
@@ -447,7 +454,7 @@ fn parse_owned_nftables_state(output: &[u8]) -> Result<OwnedFirewallObservation>
             .and_then(Value::as_str)
             .context("owned nftables table has no traffic-masq metadata comment; inspect `sudo nft list table inet traffic_masq` and identify/reconfigure the table owner manually before retrying")?;
         anyhow::ensure!(
-            comment == NFT_TABLE_COMMENT,
+            [NFT_TABLE_COMMENT, LEGACY_NFT_TABLE_COMMENT].contains(&comment),
             "owned nftables table has unsupported metadata"
         );
         let encoded = collect_metadata_chunks(entries)?;
@@ -456,7 +463,9 @@ fn parse_owned_nftables_state(output: &[u8]) -> Result<OwnedFirewallObservation>
         desired
             .validate()
             .context("owned nftables metadata is unsafe")?;
-        let integrity = if owned_nftables_structure_is_intact(entries, &desired) {
+        let integrity = if comment == NFT_TABLE_COMMENT
+            && owned_nftables_structure_is_intact(entries, &desired)
+        {
             OwnedFirewallIntegrity::Intact
         } else {
             OwnedFirewallIntegrity::Drifted
@@ -744,6 +753,11 @@ fn hex_decode(value: &str) -> Result<Vec<u8>> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouterDataplaneSnapshot {
+    #[serde(
+        default,
+        skip_serializing_if = "sharing::SharingRoutingSnapshot::is_empty"
+    )]
+    pub sharing: sharing::SharingRoutingSnapshot,
     pub ipv4_forwarding: bool,
     pub owned: Option<RouterDataplaneDesired>,
     pub owned_firewall_integrity: OwnedFirewallIntegrity,
@@ -770,6 +784,7 @@ pub enum RouterDataplaneDrift {
     OwnedFirewallMismatch { observed: RouterDataplaneDesired },
     OwnedFirewallStructureDrift,
     OwnedFirewallUnexpected,
+    OwnedSharingRoutingDrift,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -822,6 +837,14 @@ impl RouterDataplaneEventSink for NoopRouterDataplaneEventSink {
 /// changes. Preserve unrelated firewall objects and refuse foreign replacements.
 /// Async blocking backend work may outlive cancellation; retain recovery proof.
 pub trait RouterDataplaneProvider: Send + Sync {
+    /// Refresh copied gateways only after prior interfaces and DHCP are restored.
+    async fn refresh_restored_sharing(&self, _snapshot: &RouterDataplaneSnapshot) -> Result<()> {
+        Ok(())
+    }
+    /// Verify derived routing against current links and gateways.
+    async fn sharing_is_current(&self, _desired: &RouterDataplaneDesired) -> Result<bool> {
+        Ok(true)
+    }
     /// Observe forwarding and owned firewall metadata/integrity without changing them.
     /// An observation error is not an empty or disabled snapshot.
     async fn observe(&self) -> Result<RouterDataplaneSnapshot>;
@@ -868,24 +891,31 @@ pub fn missing_router_dataplane_interface(
 pub struct LinuxRouterDataplaneProvider<F, N, L> {
     forwarding: Ipv4ForwardingBackend<F>,
     nftables: std::sync::Arc<NftablesBackend<N>>,
-    network: L,
+    network: std::sync::Arc<L>,
+    routing: std::sync::Arc<sharing::Backend<L>>,
 }
 
 impl<F, N, L> LinuxRouterDataplaneProvider<F, N, L>
 where
     F: Ipv4ForwardingIo,
     N: NftExecutor,
-    L: NetworkProvider,
+    L: NetworkProvider + 'static,
 {
     pub fn new(
         forwarding: Ipv4ForwardingBackend<F>,
         nftables: NftablesBackend<N>,
         network: L,
     ) -> Self {
+        let network = std::sync::Arc::new(network);
+        let routing = std::sync::Arc::new(sharing::Backend::new(
+            network.clone(),
+            nftables.operations.clone(),
+        ));
         Self {
             forwarding,
             nftables: std::sync::Arc::new(nftables),
             network,
+            routing,
         }
     }
 
@@ -934,11 +964,26 @@ impl<F, N, L> RouterDataplaneProvider for LinuxRouterDataplaneProvider<F, N, L>
 where
     F: Ipv4ForwardingIo,
     N: NftExecutor,
-    L: NetworkProvider,
+    L: NetworkProvider + 'static,
 {
+    async fn refresh_restored_sharing(&self, snapshot: &RouterDataplaneSnapshot) -> Result<()> {
+        if !snapshot.sharing.is_empty() {
+            if let Some(desired) = &snapshot.owned {
+                self.routing.apply(desired).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn sharing_is_current(&self, desired: &RouterDataplaneDesired) -> Result<bool> {
+        self.routing.current(desired).await
+    }
+
     async fn observe(&self) -> Result<RouterDataplaneSnapshot> {
+        let sharing = self.routing.observe().await?;
         let firewall = self.nftables.observe_async().await?;
         Ok(RouterDataplaneSnapshot {
+            sharing,
             ipv4_forwarding: self.forwarding.observe()?,
             owned: firewall.desired,
             owned_firewall_integrity: firewall.integrity,
@@ -947,6 +992,7 @@ where
 
     async fn apply_owned(&self, desired: &RouterDataplaneDesired) -> Result<()> {
         self.preflight_interfaces(desired).await?;
+        self.routing.apply(desired).await?;
         self.nftables
             .apply_async(desired)
             .await
@@ -957,17 +1003,28 @@ where
     }
 
     async fn disable_owned(&self) -> Result<()> {
-        self.nftables
+        let firewall = self
+            .nftables
             .restore_async(None)
             .await
-            .context("failed to remove owned firewall state")
+            .context("failed to remove owned firewall state");
+        let routing = self
+            .routing
+            .restore(&Default::default())
+            .await
+            .context("failed to remove sharing routing");
+        finish_restore([firewall, routing])
     }
 
     async fn cleanup_removed(&self, target: &RouterDataplaneTarget) -> Result<()> {
-        self.nftables.cleanup_removed_async(target).await
+        let before = self.nftables.observe_async().await?;
+        let retained = retained_firewall(before.desired.as_ref(), target);
+        self.nftables.cleanup_removed_async(target).await?;
+        self.routing.cleanup_removed(retained.as_ref()).await
     }
 
     async fn restore_owned(&self, snapshot: &RouterDataplaneSnapshot) -> Result<()> {
+        let routing_result = self.routing.restore(&snapshot.sharing).await;
         let (firewall_result, forwarding_result) = if snapshot.ipv4_forwarding {
             let firewall = self
                 .nftables
@@ -992,14 +1049,23 @@ where
             (firewall, forwarding)
         };
 
-        match (firewall_result, forwarding_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(firewall), Ok(())) => Err(firewall),
-            (Ok(()), Err(forwarding)) => Err(forwarding),
-            (Err(firewall), Err(forwarding)) => Err(anyhow::anyhow!(
-                "dataplane restore had multiple failures: firewall: {firewall:#}; forwarding: {forwarding:#}"
-            )),
-        }
+        finish_restore([routing_result, firewall_result, forwarding_result])
+    }
+}
+
+fn finish_restore(results: impl IntoIterator<Item = Result<()>>) -> Result<()> {
+    let mut failures = results.into_iter().filter_map(Result::err);
+    let Some(first) = failures.next() else {
+        return Ok(());
+    };
+    let remaining: Vec<_> = failures.map(|e| format!("{e:#}")).collect();
+    if remaining.is_empty() {
+        Err(first)
+    } else {
+        Err(first.context(format!(
+            "dataplane restore had multiple failures: {}",
+            remaining.join("; ")
+        )))
     }
 }
 
@@ -1040,6 +1106,10 @@ where
         self.provider.cleanup_removed(target).await
     }
 
+    pub async fn refresh_restored_sharing(&self, snapshot: &RouterDataplaneSnapshot) -> Result<()> {
+        self.provider.refresh_restored_sharing(snapshot).await
+    }
+
     pub async fn snapshot(&self) -> Result<RouterDataplaneSnapshot> {
         self.provider.observe().await
     }
@@ -1055,8 +1125,15 @@ where
                 !snapshot.ipv4_forwarding
                     || snapshot.owned.as_ref() != Some(desired)
                     || snapshot.owned_firewall_integrity == OwnedFirewallIntegrity::Drifted
+                    || !self
+                        .provider
+                        .sharing_is_current(desired)
+                        .await
+                        .unwrap_or(false)
             }
-            RouterDataplaneTarget::Disabled => snapshot.owned.is_some(),
+            RouterDataplaneTarget::Disabled => {
+                snapshot.owned.is_some() || !snapshot.sharing.is_empty()
+            }
         };
         Ok(RouterDataplanePlan {
             snapshot,
@@ -1082,11 +1159,14 @@ where
         let mut drift = Vec::new();
         match target {
             RouterDataplaneTarget::Disabled => {
-                if observed.owned.is_some() {
+                if observed.owned.is_some() || !observed.sharing.is_empty() {
                     drift.push(RouterDataplaneDrift::OwnedFirewallUnexpected);
                 }
             }
             RouterDataplaneTarget::Enabled(desired) => {
+                if !self.provider.sharing_is_current(desired).await? {
+                    drift.push(RouterDataplaneDrift::OwnedSharingRoutingDrift);
+                }
                 if !observed.ipv4_forwarding {
                     drift.push(RouterDataplaneDrift::ForwardingDisabled);
                 }
@@ -1210,7 +1290,7 @@ fn recover_table_comment(
     executor: &impl NftExecutor,
     output: &[u8],
     name: &str,
-    comment: &str,
+    comments: &[&str],
 ) -> Result<Vec<u8>> {
     let mut ruleset: Value = serde_json::from_slice(output).context("nft returned invalid JSON")?;
     if let Some(entries) = ruleset.get_mut("nftables").and_then(Value::as_array_mut) {
@@ -1225,8 +1305,11 @@ fn recover_table_comment(
                 let text = executor
                     .execute(&["list", "table", NFT_FAMILY, name], &[])
                     .context("failed to read table ownership comment")?;
-                verify_text_table_comment(&text, name, comment)?;
-                table["comment"] = Value::String(comment.into());
+                let comment = comments
+                    .iter()
+                    .find(|comment| verify_text_table_comment(&text, name, comment).is_ok())
+                    .context("owned table has no supported ownership comment")?;
+                table["comment"] = Value::String((*comment).into());
             }
         }
     }

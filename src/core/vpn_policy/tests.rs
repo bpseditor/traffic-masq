@@ -66,6 +66,7 @@ fn reserved() -> VpnPolicyReservedIds {
 fn desired_state() -> VpnPolicyDesiredState {
     VpnPolicyDesiredState {
         rules: vec![Ipv4RuleSpec {
+            protocol: None,
             source: Some("192.168.10.0/24".parse().expect("source subnet")),
             destination: None,
             table: reserved().route_table.get(),
@@ -88,6 +89,7 @@ fn desired_state() -> VpnPolicyDesiredState {
 
 fn owned_rule() -> Ipv4RuleInfo {
     Ipv4RuleInfo {
+        protocol: None,
         source: Some("192.168.10.0/24".parse().expect("source subnet")),
         destination: None,
         table: reserved().route_table.get(),
@@ -212,6 +214,7 @@ async fn observe_classifies_exact_matches_as_owned_without_conflicts() {
 #[tokio::test]
 async fn observe_reports_foreign_rule_conflicts_for_reserved_priority_and_mark() {
     let foreign_rule = Ipv4RuleInfo {
+        protocol: None,
         source: None,
         destination: Some("203.0.113.0/24".parse().expect("destination")),
         table: 254,

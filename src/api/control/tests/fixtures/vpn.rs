@@ -159,6 +159,7 @@ impl NetworkProvider for FakePolicyNetwork {
             .lock()
             .unwrap()
             .push(crate::netlink::Ipv4RuleInfo {
+                protocol: None,
                 source: rule.source,
                 destination: rule.destination,
                 table: rule.table,

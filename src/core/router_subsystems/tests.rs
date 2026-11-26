@@ -28,6 +28,7 @@ impl Default for FakeDataplaneProvider {
     fn default() -> Self {
         Self {
             state: Mutex::new(RouterDataplaneSnapshot {
+                sharing: Default::default(),
                 ipv4_forwarding: false,
                 owned: None,
                 owned_firewall_integrity: OwnedFirewallIntegrity::Intact,
@@ -874,6 +875,7 @@ impl NetworkProvider for FakeChainNetworkProvider {
 
     async fn add_ipv4_rule(&self, rule: &NetIpv4RuleSpec) -> Result<()> {
         self.rules.lock().await.push(Ipv4RuleInfo {
+            protocol: None,
             source: rule.source,
             destination: rule.destination,
             table: rule.table,

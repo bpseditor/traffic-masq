@@ -204,6 +204,7 @@ impl VpnChainRuntime {
 
         Ok((
             Ipv4RuleSpec {
+                protocol: None,
                 source: None,
                 destination: None,
                 table: hop.reserved.route_table.get(),
@@ -233,6 +234,7 @@ impl VpnChainRuntime {
         let deps = self.require_vpn_chain_deps()?;
         let (rule, route) = self.relay_route_specs(hop, own_route).await?;
         let rule_info = crate::netlink::Ipv4RuleInfo {
+            protocol: None,
             source: rule.source,
             destination: rule.destination,
             table: rule.table,
@@ -300,6 +302,7 @@ impl VpnChainRuntime {
         let (rule, route) = self.relay_route_specs(hop, own_route).await?;
 
         let rule_info = crate::netlink::Ipv4RuleInfo {
+            protocol: None,
             source: rule.source,
             destination: rule.destination,
             table: rule.table,
@@ -432,6 +435,7 @@ impl VpnChainRuntime {
         let deps = self.require_vpn_chain_deps()?;
         let _ = own_route;
         let rule = Ipv4RuleSpec {
+            protocol: None,
             source: None,
             destination: None,
             table: hop.reserved.route_table.get(),
@@ -442,6 +446,7 @@ impl VpnChainRuntime {
             output_interface: None,
         };
         let expected_rule = crate::netlink::Ipv4RuleInfo {
+            protocol: None,
             source: rule.source,
             destination: rule.destination,
             table: rule.table,

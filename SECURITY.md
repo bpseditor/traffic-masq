@@ -41,9 +41,13 @@ explicit retry.
 `runtime-overrides.json` writes schema version 5 and reads versions 4 and 5.
 Version 5 adds committed standalone VPN selection. Older binaries cannot read
 newly saved version 5 records; back up state before upgrading and restore a
-coherent compatible backup before downgrading. Router journals write version 3
-and read versions 2 and 3; interface journals remain version 3 and provisioning
-secret journals remain version 2. Never downgrade with unresolved transactions.
+coherent compatible backup before downgrading. Router journals write version 4
+and read versions 2, 3 and 4. Version 4 captures owned sharing routes, tagged
+policy rules and interface names for restoration. Older readers reject version 4.
+The sharing nftables ownership marker is now v2 (v1 is read for migration), so
+older binaries also refuse the new runtime table. Before downgrading, finish all
+transactions and remove sharing and port forwards with the newer daemon; preserve foreign VPN state.
+Interface journals remain version 3 and provisioning secret journals remain version 2. Never downgrade with unresolved transactions.
 These independent schemas must not be edited by hand. If recovery
 fails, keep `router-transaction.json` and the state directory. Deleting them to
 get past the error also removes information needed for recovery.

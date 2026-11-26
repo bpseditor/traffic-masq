@@ -81,6 +81,35 @@ impl RouterDataplaneFixture {
         )?;
         configure_namespace_interface(&self.upstream_ns, &self.upstream_if, "198.51.100.2/24")?;
 
+        run(
+            "ip",
+            &[
+                "route",
+                "add",
+                "default",
+                "via",
+                "198.51.100.2",
+                "dev",
+                &self.uplink_if,
+            ],
+        )?;
+        // A foreign full-tunnel policy captures even connected LAN routes.
+        // Sharing must select both outbound and return paths without editing it.
+        run("ip", &["link", "add", "tm-vpn-sink", "type", "dummy"])?;
+        run("ip", &["link", "set", "tm-vpn-sink", "up"])?;
+        run(
+            "ip",
+            &[
+                "route",
+                "add",
+                "table",
+                "49999",
+                "default",
+                "dev",
+                "tm-vpn-sink",
+            ],
+        )?;
+        run("ip", &["rule", "add", "pref", "30000", "lookup", "49999"])?;
         let batch = format!(
             "table inet {} {{\n  chain sentinel {{\n    type filter hook input priority 300; policy accept;\n    counter\n  }}\n}}\n",
             self.foreign_table
@@ -94,6 +123,12 @@ impl RouterDataplaneFixture {
     }
 
     fn cleanup(&mut self) {
+        let _ = Command::new("ip")
+            .args(["rule", "del", "pref", "30000", "lookup", "49999"])
+            .output();
+        let _ = Command::new("ip")
+            .args(["link", "del", "tm-vpn-sink"])
+            .output();
         let _ = Command::new("nft")
             .args(["delete", "table", "inet", &self.foreign_table])
             .stdout(Stdio::null())
@@ -141,9 +176,31 @@ async fn exercise_forwarding() -> Result<()> {
         }]),
     };
 
+    let foreign_routes = command_output("ip", &["-j", "route", "show", "table", "49999"])?.stdout;
+    let foreign_rules = command_output("ip", &["-j", "rule", "show"])?.stdout;
+    let captured = command_output(
+        "ip",
+        &[
+            "-4",
+            "route",
+            "get",
+            "198.51.100.2",
+            "from",
+            "192.0.2.2",
+            "iif",
+            &fixture.lan_if,
+        ],
+    )?;
+    assert!(String::from_utf8_lossy(&captured.stdout).contains("tm-vpn-sink"));
     let plan = manager.plan(desired.clone()).await?;
     let snapshot = manager.apply(&plan).await?;
     fixture.assert_foreign_table_exists()?;
+    run("ping", &["-c", "1", "-W", "1", "192.0.2.2"])?;
+    let host_internet = command_output("ip", &["-4", "route", "get", "1.1.1.1"])?;
+    assert!(
+        String::from_utf8_lossy(&host_internet.stdout).contains("tm-vpn-sink"),
+        "sharing must preserve the router's Internet policy while restoring LAN reachability"
+    );
 
     run(
         "ip",
@@ -175,6 +232,17 @@ async fn exercise_forwarding() -> Result<()> {
         "idempotent reapply must not recreate or duplicate owned nftables objects"
     );
     fixture.assert_foreign_table_exists()?;
+    // Reopen a durable snapshot after kernel drift, as a restarted owner would.
+    let saved = manager.snapshot().await?;
+    let saved_path =
+        std::env::temp_dir().join(format!("sharing-snapshot-{}.json", unique_suffix()));
+    fs::write(&saved_path, serde_json::to_vec(&saved)?)?;
+    run("ip", &["rule", "del", "pref", "5001"])?;
+    assert!(manager.plan(desired.clone()).await?.requires_apply);
+    let reopened = serde_json::from_slice(&fs::read(&saved_path)?)?;
+    manager.rollback(&reopened).await?;
+    fs::remove_file(saved_path)?;
+    assert!(!manager.plan(desired.clone()).await?.requires_apply);
 
     // Real kernel observation must notice policy loss despite intact metadata.
     run(
@@ -191,6 +259,11 @@ async fn exercise_forwarding() -> Result<()> {
     for prefix in ["192.0.2.2/32", "0.0.0.0/0"] {
         desired.forwarding.as_mut().unwrap()[0].source_subnet = Some(prefix.parse()?);
         manager.apply(&manager.plan(desired.clone()).await?).await?;
+        let host_route = command_output("ip", &["-4", "route", "get", "1.1.1.1"])?;
+        assert!(
+            String::from_utf8_lossy(&host_route.stdout).contains("tm-vpn-sink"),
+            "even a /0 client scope must preserve the router's own Internet policy"
+        );
         assert!(!manager.plan(desired.clone()).await?.requires_apply);
         run(
             "ip",
@@ -284,6 +357,14 @@ async fn exercise_forwarding() -> Result<()> {
         "rollback must restore the original IPv4 forwarding value"
     );
     assert_eq!(snapshot_owned_table()?, fixture.original_owned_table);
+    assert_eq!(
+        command_output("ip", &["-j", "route", "show", "table", "49999"])?.stdout,
+        foreign_routes
+    );
+    assert_eq!(
+        command_output("ip", &["-j", "rule", "show"])?.stdout,
+        foreign_rules
+    );
     Ok(())
 }
 

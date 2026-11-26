@@ -29,6 +29,7 @@ impl FakeRouterSubsystems {
 
 pub(in crate::api::control::tests) fn fake_dataplane_snapshot() -> RouterDataplaneSnapshot {
     RouterDataplaneSnapshot {
+        sharing: Default::default(),
         ipv4_forwarding: true,
         owned: None,
         owned_firewall_integrity: OwnedFirewallIntegrity::Intact,

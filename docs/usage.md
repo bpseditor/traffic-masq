@@ -466,8 +466,15 @@ Routes and sharing use the same draft. **Review / Apply** (or **Plan / Apply**
 in Routes) previews all pending edits before applying them with a confirmation
 timer. Refresh keeps your draft.
 
-Saving a sharing connection creates routing intent automatically. Review,
+Saving a sharing connection stages routing, forwarding and NAT together. Review,
 apply and commit the draft; no separate router enable switch is required.
+**Through** pins matching forwarded IPv4 traffic to that interface using its
+observed routes and default gateway, ahead of ordinary full-tunnel VPN rules.
+Replies and router-to-client traffic are routed back to the client subnet.
+The router's own Internet traffic keeps its existing policy. The selected exit must already have an IPv4 default
+route; sharing does not establish its uplink or tunnel. Conflicting earlier
+policy rules are reported before applying. Existing VPN kill switches remain
+in force. Overlapping source scopes on the same ingress cannot select different exits.
 
 For inbound services, open **4 Ports**. Choose **Add**, enter the incoming and
 target interfaces, TCP or UDP, the external port and the internal IPv4/port.

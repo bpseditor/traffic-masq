@@ -987,6 +987,10 @@ where
         }
     }
 
+    async fn refresh_restored_dataplane(&self, snapshot: &RouterDataplaneSnapshot) -> Result<()> {
+        self.dataplane.refresh_restored_sharing(snapshot).await
+    }
+
     async fn rollback_dataplane(&self, snapshot: &RouterDataplaneSnapshot) -> Result<()> {
         self.dataplane.rollback(snapshot).await
     }

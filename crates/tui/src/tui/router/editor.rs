@@ -254,7 +254,9 @@ pub(super) fn delete_selected_route(app: &mut TuiApp) {
         let Some(route) = row.observed.as_ref() else {
             return;
         };
-        let dhcp_advice = if route.owner == RouteOwner::TrafficMasqDhcp {
+        let dhcp_advice = if route.owner == RouteOwner::TrafficMasqSharing {
+            "This route is derived from Internet sharing. Edit or remove its connection in Route -> Internet sharing, then Review / Apply and commit. Manual deletion is temporary; reconciliation recreates the route.\n\n".to_string()
+        } else if route.owner == RouteOwner::TrafficMasqDhcp {
             let interface = route
                 .output_interface
                 .as_deref()

@@ -302,6 +302,17 @@ startup, including a candidate whose MAC did not change.
 
 ### Other worker reservations
 
+`dataplane::sharing` derives per-connection route tables in `0x54000000..=0x54ffffff`
+with route/rule protocol 203 and return/outbound priorities 5000/5001. Routes use
+only the chosen exit and client-side connected prefixes. The netlink adapter
+rejects foreign/unsupported objects in that namespace and earlier policy rules.
+Sharing workers retain the existing nft operation reservation after caller
+cancellation, acquiring netlink request locks only inside that reservation.
+Before retiring a rollback journal, the coordinator refreshes copied gateways
+after interface/DHCP restoration; failure keeps the recovery fence. Router schema 4 snapshots restore rules/routes by interface name;
+reconciliation re-derives gateway state after DHCP or device changes. Removal-only
+cleanup retains stable table identities and never adds a permission or route.
+
 Async nftables operations reserve execution before entering the blocking pool
 and transfer that reservation to the worker. Cancellation leaves the reservation
 with queued or running work until it finishes; observation, rollback, and
@@ -406,7 +417,7 @@ Interface secret journals (version 3) and router provisioning secret journals
 (version 2) record the credential role. Rollback and crash recovery restore only
 that namespace. Previous journal schemas and the old shared credential namespace
 are unsupported; startup does not migrate credentials. Wi-Fi process records
-must use schema 2 and the AP/client/scan namespaces. Runtime overrides write schema 5 (readers also support schema 4), interface journals schema 3, router journals schema 3 (readers also support schema 2), and provisioning
+must use schema 2 and the AP/client/scan namespaces. Runtime overrides write schema 5 (readers also support schema 4), interface journals schema 3, router journals schema 4 (readers also support schemas 2 and 3), and provisioning
 secret journals schema 2. Unsupported uncommitted journals remain on disk and
 block recovery; transaction tokens already proven committed can still retire
 obsolete journal files without replaying them.

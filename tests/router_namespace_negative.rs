@@ -253,8 +253,21 @@ impl RouterNamespaceFixture {
                 &self.uplink_if,
             ],
         )?;
-        if self.options.bring_uplink_up {
-            run("ip", &["link", "set", &self.uplink_if, "up"])?;
+        run("ip", &["link", "set", &self.uplink_if, "up"])?;
+        run(
+            "ip",
+            &[
+                "route",
+                "add",
+                "default",
+                "via",
+                UPSTREAM_ADDR,
+                "dev",
+                &self.uplink_if,
+            ],
+        )?;
+        if !self.options.bring_uplink_up {
+            run("ip", &["link", "set", &self.uplink_if, "down"])?;
         }
 
         run("ip", &["-n", &self.upstream_ns, "link", "set", "lo", "up"])?;

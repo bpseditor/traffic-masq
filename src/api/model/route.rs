@@ -8,6 +8,7 @@ pub(super) fn route_owner_to_view(value: RouteOwner) -> RouteOwnerView {
     match value {
         RouteOwner::TrafficMasqStatic => RouteOwnerView::TrafficMasqStatic,
         RouteOwner::TrafficMasqDhcp => RouteOwnerView::TrafficMasqDhcp,
+        RouteOwner::TrafficMasqSharing => RouteOwnerView::TrafficMasqSharing,
         RouteOwner::Kernel => RouteOwnerView::Kernel,
         RouteOwner::Boot => RouteOwnerView::Boot,
         RouteOwner::Static => RouteOwnerView::Static,
@@ -21,6 +22,7 @@ pub(super) fn route_owner_from_view(value: RouteOwnerView) -> RouteOwner {
     match value {
         RouteOwnerView::TrafficMasqStatic => RouteOwner::TrafficMasqStatic,
         RouteOwnerView::TrafficMasqDhcp => RouteOwner::TrafficMasqDhcp,
+        RouteOwnerView::TrafficMasqSharing => RouteOwner::TrafficMasqSharing,
         RouteOwnerView::Kernel => RouteOwner::Kernel,
         RouteOwnerView::Boot => RouteOwner::Boot,
         RouteOwnerView::Static => RouteOwner::Static,

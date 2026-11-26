@@ -569,6 +569,10 @@ pub trait RouterSubsystems: Send + Sync {
     ) -> Result<()>;
     /// Restore the captured owned dataplane; preserve foreign tables and rules.
     async fn rollback_dataplane(&self, snapshot: &RouterDataplaneSnapshot) -> Result<()>;
+    /// Finalize derived sharing gateways after interface and DHCP restoration.
+    async fn refresh_restored_dataplane(&self, _snapshot: &RouterDataplaneSnapshot) -> Result<()> {
+        Ok(())
+    }
     /// Stop DHCP runtime installed by the candidate before interface rollback.
     /// Previous DHCP intent is restored by `rollback_dhcp_clients` afterwards.
     async fn rollback_candidate_uplink_dhcp(&self) -> Result<()>;
@@ -994,6 +998,7 @@ impl RouterManager {
         stages: &[Stage],
     ) -> Vec<anyhow::Error> {
         let mut rollback_failures = Vec::new();
+        let mut deferred_dataplane_failure = None;
         for stage in stages.iter().rev() {
             let result = match stage {
                 Stage::Interfaces => {
@@ -1037,14 +1042,40 @@ impl RouterManager {
                 }
             };
             if let Err(error) = result {
-                rollback_failures.push(error.context(stage.name()));
+                if *stage == Stage::Dataplane && !snapshot.dataplane.sharing.is_empty() {
+                    // A saved exit can be recreated by the later interface/VPN stages.
+                    deferred_dataplane_failure = Some(error.context(stage.name()));
+                } else {
+                    rollback_failures.push(error.context(stage.name()));
+                }
+            }
+        }
+        if let Some(previous) = deferred_dataplane_failure {
+            // Idempotently retry the full owner after its dependencies exist.
+            // Discard the earlier error only when restoration is now proven.
+            if let Err(error) = self
+                .subsystems
+                .rollback_dataplane(&snapshot.dataplane)
+                .await
+            {
+                rollback_failures
+                    .extend([previous, error.context("restore sharing after interfaces")]);
+            }
+        }
+        if stages.contains(&Stage::Dataplane) && !snapshot.dataplane.sharing.is_empty() {
+            if let Err(error) = self
+                .subsystems
+                .refresh_restored_dataplane(&snapshot.dataplane)
+                .await
+            {
+                rollback_failures.push(error.context("refresh restored sharing routes"));
             }
         }
         rollback_failures
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
     UplinkDhcpRestore,
     Interfaces,

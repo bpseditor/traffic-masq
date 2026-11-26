@@ -51,3 +51,13 @@ Existing coordinators retain compensation. Paired AP defaults are resolved after
 explicit/tentative intent in `state::overrides` and `core::desired`.
 See [the contract](change-safety.md#runtime-ownership-and-cancellation) and
 [architecture](architecture.md#applying-changes) for invariants and entry points.
+
+## Sharing owns its selected forwarding route
+
+`ForwardingConfig::to` now selects routing as well as firewall/NAT permission.
+`dataplane::sharing` uses the existing network provider, nft operation reservation
+and router coordinator; API/TUI adapters do not write routes. Router journals
+capture tagged policy rules/routes and restore interface names after index changes.
+The dataplane tests cover ownership, cancellation, drift and restoration;
+`router_dataplane_namespace` exercises a foreign full-tunnel rule and verifies
+outbound/return traffic, reopened snapshots and preservation of foreign state.

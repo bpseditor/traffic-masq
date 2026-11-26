@@ -105,6 +105,9 @@ pub fn validate_forwarding<R: ForwardingRule>(rules: &[R]) -> Result<(), String>
     for (index, rule) in rules.iter().enumerate() {
         validate_interface_name(rule.ingress_interface())?;
         validate_interface_name(rule.egress_interface())?;
+        if rule.ingress_interface() == "lo" || rule.egress_interface() == "lo" {
+            return Err("Internet sharing requires non-loopback interfaces".into());
+        }
         if rule.ingress_interface() == rule.egress_interface() {
             return Err("forwarding requires different ingress and egress interfaces".into());
         }
@@ -116,7 +119,6 @@ pub fn validate_forwarding<R: ForwardingRule>(rules: &[R]) -> Result<(), String>
         }
         if rules[..index].iter().any(|prior| {
             prior.ingress_interface() == rule.ingress_interface()
-                && prior.egress_interface() == rule.egress_interface()
                 && match (prior.source_subnet(), rule.source_subnet()) {
                     (Some(a), Some(b)) => a.contains(&b.addr()) || b.contains(&a.addr()),
                     _ => true,
@@ -160,4 +162,26 @@ pub struct OwnedIpv4RouteConfigView {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VpnHopConfigView {
     pub profile_name: String,
+}
+
+#[cfg(test)]
+mod sharing_tests {
+    use super::*;
+
+    #[test]
+    fn ingress_scopes_cannot_choose_ambiguous_exits() {
+        let a = ForwardingConfigView {
+            from: "lan0".into(),
+            to: "wan0".into(),
+            source_subnet: Some("192.0.2.0/24".parse().unwrap()),
+            masquerade: true,
+        };
+        let mut b = a.clone();
+        b.to = "wan1".into();
+        assert!(validate_forwarding(&[a.clone(), b.clone()]).is_err());
+        b.source_subnet = Some("198.51.100.0/24".parse().unwrap());
+        assert!(validate_forwarding(&[a, b.clone()]).is_ok());
+        b.from = "lo".into();
+        assert!(validate_forwarding(&[b]).is_err());
+    }
 }

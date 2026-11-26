@@ -13,12 +13,29 @@ use traffic_masq_netlink::{Ipv4AddressInfo, NetworkInterface};
 struct FakeNetworkProvider {
     interfaces: Vec<NetworkInterface>,
     addresses: Vec<Ipv4AddressInfo>,
+    fail_next_route: Arc<AtomicBool>,
+    pause_next_route: Arc<AtomicBool>,
+    route_entered: Arc<tokio::sync::Notify>,
+    route_release: Arc<tokio::sync::Notify>,
+    routes: Arc<StdMutex<Vec<traffic_masq_netlink::Ipv4RouteInfo>>>,
+    rules: Arc<StdMutex<Vec<traffic_masq_netlink::Ipv4RuleInfo>>>,
 }
 
 impl FakeNetworkProvider {
     fn all_up() -> Self {
         Self {
             addresses: vec![],
+            fail_next_route: Default::default(),
+            pause_next_route: Default::default(),
+            route_entered: Default::default(),
+            route_release: Default::default(),
+            rules: Default::default(),
+            routes: Arc::new(StdMutex::new(vec![
+                test_route("192.168.10.0/24", None, 2),
+                test_route("192.168.20.0/24", None, 3),
+                test_route("198.51.100.0/24", None, 1),
+                test_route("0.0.0.0/0", Some("198.51.100.1"), 1),
+            ])),
             interfaces: vec![
                 NetworkInterface {
                     is_wireless: false,
@@ -49,8 +66,78 @@ impl FakeNetworkProvider {
     }
 }
 
+fn test_route(
+    destination: &str,
+    gateway: Option<&str>,
+    index: u32,
+) -> traffic_masq_netlink::Ipv4RouteInfo {
+    traffic_masq_netlink::Ipv4RouteInfo {
+        destination: destination.parse().unwrap(),
+        gateway: gateway.map(|g| g.parse().unwrap()),
+        output_interface_index: Some(index),
+        table: 254,
+        metric: None,
+        protocol: 2,
+        scope: if gateway.is_some() { 0 } else { 253 },
+    }
+}
+
 #[async_trait]
 impl NetworkProvider for FakeNetworkProvider {
+    async fn list_ipv4_routes(&self) -> Result<Vec<traffic_masq_netlink::Ipv4RouteInfo>> {
+        Ok(self.routes.lock().unwrap().clone())
+    }
+    async fn list_ipv4_rules(&self) -> Result<Vec<traffic_masq_netlink::Ipv4RuleInfo>> {
+        Ok(self.rules.lock().unwrap().clone())
+    }
+    async fn add_ipv4_route(&self, route: &traffic_masq_netlink::Ipv4RouteSpec) -> Result<()> {
+        if self.fail_next_route.swap(false, Ordering::SeqCst) {
+            anyhow::bail!("injected sharing route failure");
+        }
+        if self.pause_next_route.swap(false, Ordering::SeqCst) {
+            self.route_entered.notify_one();
+            self.route_release.notified().await;
+        }
+        self.routes
+            .lock()
+            .unwrap()
+            .push(traffic_masq_netlink::Ipv4RouteInfo {
+                destination: route.destination,
+                gateway: route.gateway,
+                output_interface_index: route.output_interface_index,
+                table: route.table,
+                metric: route.metric,
+                protocol: route.protocol,
+                scope: if route.gateway.is_some() { 0 } else { 253 },
+            });
+        Ok(())
+    }
+    async fn delete_ipv4_route(&self, route: &traffic_masq_netlink::Ipv4RouteInfo) -> Result<()> {
+        self.routes.lock().unwrap().retain(|r| r != route);
+        Ok(())
+    }
+    async fn add_ipv4_rule(&self, rule: &traffic_masq_netlink::Ipv4RuleSpec) -> Result<()> {
+        self.rules
+            .lock()
+            .unwrap()
+            .push(traffic_masq_netlink::Ipv4RuleInfo {
+                protocol: rule.protocol,
+                source: rule.source,
+                destination: rule.destination,
+                table: rule.table,
+                priority: rule.priority,
+                fw_mark: rule.fw_mark,
+                fw_mask: rule.fw_mask,
+                input_interface: rule.input_interface.clone(),
+                output_interface: rule.output_interface.clone(),
+            });
+        Ok(())
+    }
+    async fn delete_ipv4_rule(&self, rule: &traffic_masq_netlink::Ipv4RuleInfo) -> Result<()> {
+        self.rules.lock().unwrap().retain(|r| r != rule);
+        Ok(())
+    }
+
     async fn list_interfaces(&self) -> Result<Vec<NetworkInterface>> {
         Ok(self.interfaces.clone())
     }
@@ -395,6 +482,7 @@ impl RouterDataplaneProvider for FakeProvider {
     async fn apply_owned(&self, desired: &RouterDataplaneDesired) -> Result<()> {
         self.apply_calls.fetch_add(1, Ordering::SeqCst);
         *self.state.lock().await = RouterDataplaneSnapshot {
+            sharing: Default::default(),
             ipv4_forwarding: true,
             owned: Some(desired.clone()),
             owned_firewall_integrity: OwnedFirewallIntegrity::Intact,
@@ -638,7 +726,7 @@ fn nft_render_contains_owned_policy_and_scoped_masquerade() {
     let rendered = render_nftables_batch(false, Some(&desired())).expect("render");
 
     assert!(rendered.contains("table inet traffic_masq"));
-    assert!(rendered.contains("comment \"traffic-masq:v1\""));
+    assert!(rendered.contains("comment \"traffic-masq:v2\""));
     assert!(rendered.contains("chain metadata"));
     assert!(rendered
         .lines()
@@ -1023,6 +1111,7 @@ fn nft_observe_rejects_owned_table_without_valid_metadata() {
 
 fn empty_snapshot() -> RouterDataplaneSnapshot {
     RouterDataplaneSnapshot {
+        sharing: Default::default(),
         ipv4_forwarding: false,
         owned: None,
         owned_firewall_integrity: OwnedFirewallIntegrity::Intact,
@@ -1143,6 +1232,7 @@ async fn linux_provider_restore_orders_operations_for_target_forwarding_state() 
             FakeNetworkProvider::all_up(),
         );
         let snapshot = RouterDataplaneSnapshot {
+            sharing: Default::default(),
             ipv4_forwarding: target_forwarding,
             owned: None,
             owned_firewall_integrity: OwnedFirewallIntegrity::Intact,
@@ -1320,6 +1410,7 @@ async fn linux_provider_preflight_accepts_active_uplink_and_outputs() {
 async fn health_reports_healthy_state_and_forwarding_or_firewall_drift() {
     let wanted = desired();
     let healthy = RouterDataplaneManager::new(FakeProvider::new(RouterDataplaneSnapshot {
+        sharing: Default::default(),
         ipv4_forwarding: true,
         owned: Some(wanted.clone()),
         owned_firewall_integrity: OwnedFirewallIntegrity::Intact,
@@ -1332,6 +1423,7 @@ async fn health_reports_healthy_state_and_forwarding_or_firewall_drift() {
 
     let forwarding_drift =
         RouterDataplaneManager::new(FakeProvider::new(RouterDataplaneSnapshot {
+            sharing: Default::default(),
             ipv4_forwarding: false,
             owned: Some(wanted.clone()),
             owned_firewall_integrity: OwnedFirewallIntegrity::Intact,
@@ -1346,6 +1438,7 @@ async fn health_reports_healthy_state_and_forwarding_or_firewall_drift() {
 
     let missing_firewall =
         RouterDataplaneManager::new(FakeProvider::new(RouterDataplaneSnapshot {
+            sharing: Default::default(),
             ipv4_forwarding: true,
             owned: None,
             owned_firewall_integrity: OwnedFirewallIntegrity::Intact,
@@ -1362,6 +1455,7 @@ async fn health_reports_healthy_state_and_forwarding_or_firewall_drift() {
     other.forwarding.as_mut().unwrap()[0].to = "other0".to_string();
     let mismatched_firewall =
         RouterDataplaneManager::new(FakeProvider::new(RouterDataplaneSnapshot {
+            sharing: Default::default(),
             ipv4_forwarding: true,
             owned: Some(other.clone()),
             owned_firewall_integrity: OwnedFirewallIntegrity::Intact,
@@ -1379,6 +1473,7 @@ async fn health_reports_healthy_state_and_forwarding_or_firewall_drift() {
 async fn structure_drift_is_unhealthy_and_requires_reapply() {
     let wanted = desired();
     let manager = RouterDataplaneManager::new(FakeProvider::new(RouterDataplaneSnapshot {
+        sharing: Default::default(),
         ipv4_forwarding: true,
         owned: Some(wanted.clone()),
         owned_firewall_integrity: OwnedFirewallIntegrity::Drifted,
@@ -1490,6 +1585,7 @@ async fn failed_partial_apply_restores_original_snapshot() {
 #[tokio::test]
 async fn rollback_restores_snapshot() {
     let initial = RouterDataplaneSnapshot {
+        sharing: Default::default(),
         ipv4_forwarding: true,
         owned: None,
         owned_firewall_integrity: OwnedFirewallIntegrity::Intact,
@@ -1504,6 +1600,7 @@ async fn rollback_restores_snapshot() {
 #[tokio::test]
 async fn enabled_to_disabled_removes_only_owned_firewall() {
     let initial = RouterDataplaneSnapshot {
+        sharing: Default::default(),
         ipv4_forwarding: true,
         owned: Some(desired()),
         owned_firewall_integrity: OwnedFirewallIntegrity::Intact,
@@ -1529,6 +1626,7 @@ async fn enabled_to_disabled_removes_only_owned_firewall() {
 async fn disabled_target_is_noop_and_preserves_foreign_forwarding_state() {
     for forwarding in [false, true] {
         let initial = RouterDataplaneSnapshot {
+            sharing: Default::default(),
             ipv4_forwarding: forwarding,
             owned: None,
             owned_firewall_integrity: OwnedFirewallIntegrity::Intact,
@@ -1548,6 +1646,7 @@ async fn disabled_target_is_noop_and_preserves_foreign_forwarding_state() {
 #[tokio::test]
 async fn disabled_health_reports_remaining_owned_firewall_only() {
     let manager = RouterDataplaneManager::new(FakeProvider::new(RouterDataplaneSnapshot {
+        sharing: Default::default(),
         ipv4_forwarding: false,
         owned: Some(desired()),
         owned_firewall_integrity: OwnedFirewallIntegrity::Drifted,
@@ -1893,4 +1992,185 @@ fn old_firewall_metadata_is_rejected() {
         }))
         .is_err()
     );
+}
+
+#[tokio::test]
+async fn sharing_routes_survive_reopen_rebind_and_drift_without_touching_foreign_vpn() {
+    let mut network = FakeNetworkProvider::all_up();
+    let mut foreign = test_route("0.0.0.0/0", None, 99);
+    foreign.table = 51820;
+    network.routes.lock().unwrap().push(foreign.clone());
+    let wanted = desired();
+    let state = sharing::desired(&network, &wanted).await.unwrap();
+    sharing::restore(&network, &state).await.unwrap();
+    assert!(sharing::current(&network, &wanted).await.unwrap());
+    assert!(network
+        .routes
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|r| r.protocol == 203
+            && r.destination.prefix_len() == 0
+            && r.output_interface_index == Some(1)
+            && r.gateway == Some("198.51.100.1".parse().unwrap())));
+    assert!(network
+        .rules
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|r| r.protocol == Some(203)
+            && r.input_interface.as_deref() == Some("eth0")
+            && r.destination.is_some()));
+    let saved: sharing::SharingRoutingSnapshot =
+        serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+    network.rules.lock().unwrap().clear();
+    assert!(!sharing::current(&network, &wanted).await.unwrap());
+    network.interfaces[0].index = 42;
+    for route in network.routes.lock().unwrap().iter_mut() {
+        if route.output_interface_index == Some(1) {
+            route.output_interface_index = Some(42);
+        }
+    }
+    sharing::restore(&network, &saved).await.unwrap();
+    assert!(sharing::current(&network, &wanted).await.unwrap());
+    sharing::restore(&network, &Default::default())
+        .await
+        .unwrap();
+    assert!(sharing::observe(&network).await.unwrap().is_empty());
+    assert!(network.routes.lock().unwrap().contains(&foreign));
+    sharing::restore(
+        &network,
+        &sharing::desired(&network, &wanted).await.unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(sharing::current(&network, &wanted).await.unwrap());
+}
+
+#[tokio::test]
+async fn sharing_conflicts_and_missing_gateway_fail_before_mutation() {
+    for conflicting_rule in [false, true] {
+        let network = FakeNetworkProvider::all_up();
+        if conflicting_rule {
+            network
+                .rules
+                .lock()
+                .unwrap()
+                .push(traffic_masq_netlink::Ipv4RuleInfo {
+                    protocol: None,
+                    source: None,
+                    destination: None,
+                    table: 51820,
+                    priority: Some(100),
+                    fw_mark: None,
+                    fw_mask: None,
+                    input_interface: None,
+                    output_interface: None,
+                });
+        } else {
+            network
+                .routes
+                .lock()
+                .unwrap()
+                .retain(|r| r.destination.prefix_len() != 0);
+        }
+        let before = network.routes.lock().unwrap().clone();
+        let error = sharing::desired(&network, &desired()).await.unwrap_err();
+        assert!(error.to_string().contains(if conflicting_rule {
+            "foreign rule"
+        } else {
+            "default route"
+        }));
+        assert_eq!(*network.routes.lock().unwrap(), before);
+    }
+}
+
+#[tokio::test]
+async fn sharing_removal_is_stable_and_partial_failure_can_restore_saved_routing() {
+    let network = FakeNetworkProvider::all_up();
+    let wanted = desired();
+    let original = sharing::desired(&network, &wanted).await.unwrap();
+    sharing::restore(&network, &original).await.unwrap();
+    let mut retained = wanted.clone();
+    retained.forwarding.as_mut().unwrap().pop();
+    sharing::cleanup_removed(&network, Some(&retained))
+        .await
+        .unwrap();
+    assert!(sharing::current(&network, &retained).await.unwrap());
+    network.fail_next_route.store(true, Ordering::SeqCst);
+    assert!(sharing::restore(&network, &original).await.is_err());
+    sharing::restore(&network, &original).await.unwrap();
+    assert!(sharing::current(&network, &wanted).await.unwrap());
+}
+
+#[tokio::test]
+async fn cancelled_sharing_worker_retains_reservation_until_rollback_can_run() {
+    let network = Arc::new(FakeNetworkProvider::all_up());
+    let backend = Arc::new(sharing::Backend::new(network.clone(), Default::default()));
+    network.pause_next_route.store(true, Ordering::SeqCst);
+    let caller = tokio::spawn({
+        let backend = backend.clone();
+        async move { backend.apply(&desired()).await }
+    });
+    network.route_entered.notified().await;
+    caller.abort();
+    let _ = caller.await;
+    let rollback = tokio::spawn({
+        let backend = backend.clone();
+        async move { backend.restore(&Default::default()).await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!rollback.is_finished());
+    network.route_release.notify_one();
+    rollback.await.unwrap().unwrap();
+    assert!(backend.observe().await.unwrap().is_empty());
+    backend.apply(&desired()).await.unwrap();
+    assert!(backend.current(&desired()).await.unwrap());
+}
+
+#[test]
+fn legacy_firewall_is_readable_but_requires_routing_upgrade() {
+    let mut ruleset = nft_ruleset_value(&desired());
+    for entry in ruleset["nftables"].as_array_mut().unwrap() {
+        if entry["table"]["name"] == NFT_TABLE {
+            entry["table"]["comment"] = serde_json::json!(LEGACY_NFT_TABLE_COMMENT);
+        }
+    }
+    let observed = parse_owned_nftables_state(&serde_json::to_vec(&ruleset).unwrap()).unwrap();
+    assert_eq!(observed.desired, Some(desired()));
+    assert_eq!(observed.integrity, OwnedFirewallIntegrity::Drifted);
+}
+
+#[tokio::test]
+async fn restored_sharing_refreshes_a_fresh_dhcp_gateway_after_runtime_restoration() {
+    let network = FakeNetworkProvider::all_up();
+    let wanted = desired();
+    let provider = LinuxRouterDataplaneProvider::new(
+        Ipv4ForwardingBackend::new(FakeForwardingIo::new(b"0\n")),
+        NftablesBackend::new(FakeNftExecutor::with_responses(vec![
+            Ok(nft_ruleset(None)),
+            Ok(Vec::new()),
+            Ok(nft_ruleset(Some(&wanted))),
+            Ok(nft_ruleset(Some(&wanted))),
+        ])),
+        network.clone(),
+    );
+    provider.apply_owned(&wanted).await.unwrap();
+    let snapshot = provider.observe().await.unwrap();
+    for route in network.routes.lock().unwrap().iter_mut() {
+        if route.table == 254 && route.destination.prefix_len() == 0 {
+            route.gateway = Some("198.51.100.254".parse().unwrap());
+        }
+    }
+    provider.restore_owned(&snapshot).await.unwrap();
+    assert!(!provider.sharing_is_current(&wanted).await.unwrap());
+    provider.refresh_restored_sharing(&snapshot).await.unwrap();
+    assert!(provider.sharing_is_current(&wanted).await.unwrap());
+    assert!(network
+        .routes
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r.protocol == 203 && r.destination.prefix_len() == 0)
+        .all(|r| r.gateway == Some("198.51.100.254".parse().unwrap())));
 }

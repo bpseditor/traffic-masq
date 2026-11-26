@@ -513,6 +513,7 @@ impl<D: VpnDriver, E: NftExecutor> VpnPolicyManager<D, E> {
 
     fn desired_rule(&self) -> Ipv4RuleSpec {
         Ipv4RuleSpec {
+            protocol: None,
             source: None,
             destination: None,
             table: self.reserved.route_table.get(),
@@ -586,6 +587,7 @@ fn route_spec_from_info(info: &Ipv4RouteInfo) -> Ipv4RouteSpec {
 
 fn rule_spec_from_info(info: &Ipv4RuleInfo) -> Ipv4RuleSpec {
     Ipv4RuleSpec {
+        protocol: info.protocol,
         source: info.source,
         destination: info.destination,
         table: info.table,

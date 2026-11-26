@@ -129,3 +129,12 @@ Explicit operator cancellation uses the existing applying-to-compensation bounda
 acknowledgement is not restoration proof. Identity isolation and worker reservations
 remain Rust obligations covered by operation/admission/coordinator tests. See
 [the cancellation contract](../docs/change-safety.md#runtime-ownership-and-cancellation).
+
+Sharing policy routing is part of the existing dataplane stage. Schema 4 adds its
+concrete route/rule snapshot; no stage ordering or abstract transition changes.
+A failed sharing restore is retried once after its interface/VPN dependencies;
+only a successful full owner restore resolves that earlier failure. Before
+completing restoration, the coordinator refreshes copied sharing gateways
+after interfaces and DHCP have been restored; failure retains recovery evidence.
+Worker reservation lifetime, foreign routing preservation and kernel read-back
+remain Rust/namespace-test obligations, not properties proved by Lean.
