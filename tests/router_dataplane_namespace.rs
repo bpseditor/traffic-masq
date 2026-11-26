@@ -232,6 +232,23 @@ async fn exercise_forwarding() -> Result<()> {
         "idempotent reapply must not recreate or duplicate owned nftables objects"
     );
     fixture.assert_foreign_table_exists()?;
+    // Exercise real RTM_NEWROUTE replacement while the sharing selectors stay installed.
+    for gateway in ["198.51.100.254", "198.51.100.2"] {
+        run(
+            "ip",
+            &[
+                "route",
+                "replace",
+                "default",
+                "via",
+                gateway,
+                "dev",
+                &fixture.uplink_if,
+            ],
+        )?;
+        manager.apply(&manager.plan(desired.clone()).await?).await?;
+        assert!(!manager.plan(desired.clone()).await?.requires_apply);
+    }
     // Reopen a durable snapshot after kernel drift, as a restarted owner would.
     let saved = manager.snapshot().await?;
     let saved_path =

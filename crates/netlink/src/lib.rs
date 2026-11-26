@@ -498,6 +498,12 @@ pub trait NetworkProvider: Send + Sync {
         anyhow::bail!("IPv4 route creation is not supported by this network provider")
     }
 
+    /// Atomically replace an owned route with the same table, prefix and metric.
+    /// The caller must verify ownership under its existing mutation reservation.
+    async fn replace_ipv4_route(&self, _route: &Ipv4RouteSpec) -> Result<()> {
+        anyhow::bail!("IPv4 route replacement is not supported by this network provider")
+    }
+
     /// Delete the observed route identity. Caller must verify ownership and keep
     /// the mutation gate across observation and deletion; foreign routes must survive.
     async fn delete_ipv4_route(&self, _route: &Ipv4RouteInfo) -> Result<()> {
@@ -629,6 +635,10 @@ where
         (**self).add_ipv4_route(route).await
     }
 
+    async fn replace_ipv4_route(&self, route: &Ipv4RouteSpec) -> Result<()> {
+        (**self).replace_ipv4_route(route).await
+    }
+
     async fn delete_ipv4_route(&self, route: &Ipv4RouteInfo) -> Result<()> {
         (**self).delete_ipv4_route(route).await
     }
@@ -668,6 +678,41 @@ pub struct RtnetlinkNetworkProvider {
 }
 
 impl RtnetlinkNetworkProvider {
+    async fn write_ipv4_route(&self, route: &Ipv4RouteSpec, replace: bool) -> Result<()> {
+        route.validate()?;
+        let _request = self.request_lock.lock().await;
+        let mut request = RouteMessageBuilder::<Ipv4Addr>::new()
+            .destination_prefix(route.destination.network(), route.destination.prefix_len())
+            .table_id(route.table)
+            .protocol(RouteProtocol::Other(route.protocol));
+        if let Some(gateway) = route.gateway {
+            request = request.gateway(gateway);
+        } else {
+            request = request.scope(RouteScope::Link);
+        }
+        if let Some(index) = route.output_interface_index {
+            request = request.output_interface(index);
+        }
+        if let Some(metric) = route.metric {
+            request = request.priority(metric);
+        }
+        let request = self.handle.route().add(request.build());
+        let request = if replace { request.replace() } else { request };
+        request.execute().await.with_context(|| {
+            format!(
+                "RTM_NEWROUTE while adding {}/{} in table {} (gateway={:?}, ifindex={:?}, metric={:?}, protocol={})",
+                route.destination.network(),
+                route.destination.prefix_len(),
+                route.table,
+                route.gateway,
+                route.output_interface_index,
+                route.metric,
+                route.protocol
+            )
+        })?;
+        Ok(())
+    }
+
     pub fn connect() -> Result<Self> {
         let (connection, handle, _) = new_connection()?;
         let connection_task = tokio::spawn(connection);
@@ -1354,36 +1399,11 @@ impl NetworkProvider for RtnetlinkNetworkProvider {
     }
 
     async fn add_ipv4_route(&self, route: &Ipv4RouteSpec) -> Result<()> {
-        route.validate()?;
-        let _request = self.request_lock.lock().await;
-        let mut request = RouteMessageBuilder::<Ipv4Addr>::new()
-            .destination_prefix(route.destination.network(), route.destination.prefix_len())
-            .table_id(route.table)
-            .protocol(RouteProtocol::Other(route.protocol));
-        if let Some(gateway) = route.gateway {
-            request = request.gateway(gateway);
-        } else {
-            request = request.scope(RouteScope::Link);
-        }
-        if let Some(index) = route.output_interface_index {
-            request = request.output_interface(index);
-        }
-        if let Some(metric) = route.metric {
-            request = request.priority(metric);
-        }
-        self.handle.route().add(request.build()).execute().await.with_context(|| {
-            format!(
-                "RTM_NEWROUTE while adding {}/{} in table {} (gateway={:?}, ifindex={:?}, metric={:?}, protocol={})",
-                route.destination.network(),
-                route.destination.prefix_len(),
-                route.table,
-                route.gateway,
-                route.output_interface_index,
-                route.metric,
-                route.protocol
-            )
-        })?;
-        Ok(())
+        self.write_ipv4_route(route, false).await
+    }
+
+    async fn replace_ipv4_route(&self, route: &Ipv4RouteSpec) -> Result<()> {
+        self.write_ipv4_route(route, true).await
     }
 
     async fn delete_ipv4_route(&self, route: &Ipv4RouteInfo) -> Result<()> {

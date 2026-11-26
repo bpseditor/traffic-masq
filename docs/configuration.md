@@ -149,7 +149,10 @@ and optionally restricts traffic with `source_subnet` (a network CIDR without
 host bits). Overlapping source scopes on the same ingress are rejected, including
 rules selecting different exits. `to` selects the forwarding route as well as
 firewall/NAT permission. Sharing derives private policy tables from the selected
-exit's existing routes/default gateway and installs client return routes; it does
+exit's existing routes/default gateway and installs client return routes. The main
+table supplies exit routes when it has a default for that interface; otherwise
+one unambiguous table with an exit default is required. Routes from other policy
+tables are not imported. Gateway updates replace the existing route atomically. It does
 not create interface addresses, an upstream connection or a VPN tunnel. Router
 to-client traffic also uses the LAN route; router Internet policy and foreign VPN
 objects are preserved. Loopback is not a sharing endpoint.

@@ -228,8 +228,25 @@ pub(crate) async fn desired(
             "sharing Through {} has no IPv4 default route/gateway",
             rule.to
         );
+        // Main is authoritative when it supplies the exit default. Otherwise
+        // use one unambiguous tunnel table, preserving other policy scopes.
+        let default_tables: BTreeSet<_> = candidates
+            .iter()
+            .filter(|r| r.destination.prefix_len() == 0)
+            .map(|r| r.table)
+            .collect();
+        let source_table = if default_tables.contains(&254) {
+            254
+        } else {
+            anyhow::ensure!(
+                default_tables.len() == 1,
+                "sharing Through {} has ambiguous default route tables",
+                rule.to
+            );
+            *default_tables.first().expect("default route checked above")
+        };
         let mut selected = BTreeMap::new();
-        for route in candidates {
+        for route in candidates.into_iter().filter(|r| r.table == source_table) {
             let preference = (route.table != 254, route.metric.unwrap_or(0), route.table);
             let entry = selected
                 .entry(route.destination)
@@ -341,23 +358,29 @@ pub(crate) async fn restore(
             network.delete_ipv4_rule(rule).await?;
         }
     }
+    let same_key = |a: &Ipv4RouteInfo, b: &Ipv4RouteInfo| {
+        a.table == b.table && a.destination == b.destination && a.metric == b.metric
+    };
     for route in existing.routes.iter().rev() {
-        if !target.routes.contains(route) {
+        if !target.routes.iter().any(|next| same_key(route, next)) {
             network.delete_ipv4_route(route).await?;
         }
     }
     for route in &target.routes {
         if !existing.routes.contains(route) {
-            network
-                .add_ipv4_route(&Ipv4RouteSpec {
-                    destination: route.destination,
-                    gateway: route.gateway,
-                    output_interface_index: route.output_interface_index,
-                    table: route.table,
-                    metric: route.metric,
-                    protocol: PROTOCOL,
-                })
-                .await?;
+            let spec = Ipv4RouteSpec {
+                destination: route.destination,
+                gateway: route.gateway,
+                output_interface_index: route.output_interface_index,
+                table: route.table,
+                metric: route.metric,
+                protocol: PROTOCOL,
+            };
+            if existing.routes.iter().any(|old| same_key(old, route)) {
+                network.replace_ipv4_route(&spec).await?;
+            } else {
+                network.add_ipv4_route(&spec).await?;
+            }
         }
     }
     for rule in &target.rules {

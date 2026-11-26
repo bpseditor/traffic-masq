@@ -112,6 +112,25 @@ impl NetworkProvider for FakeNetworkProvider {
             });
         Ok(())
     }
+    async fn replace_ipv4_route(&self, route: &traffic_masq_netlink::Ipv4RouteSpec) -> Result<()> {
+        if self.fail_next_route.swap(false, Ordering::SeqCst) {
+            anyhow::bail!("injected sharing route replacement failure");
+        }
+        let mut routes = self.routes.lock().unwrap();
+        let old = routes
+            .iter_mut()
+            .find(|r| {
+                r.table == route.table
+                    && r.destination == route.destination
+                    && r.metric == route.metric
+            })
+            .ok_or_else(|| anyhow::anyhow!("replacement target absent"))?;
+        old.gateway = route.gateway;
+        old.output_interface_index = route.output_interface_index;
+        old.protocol = route.protocol;
+        old.scope = if route.gateway.is_some() { 0 } else { 253 };
+        Ok(())
+    }
     async fn delete_ipv4_route(&self, route: &traffic_masq_netlink::Ipv4RouteInfo) -> Result<()> {
         self.routes.lock().unwrap().retain(|r| r != route);
         Ok(())
@@ -2173,4 +2192,43 @@ async fn restored_sharing_refreshes_a_fresh_dhcp_gateway_after_runtime_restorati
         .iter()
         .filter(|r| r.protocol == 203 && r.destination.prefix_len() == 0)
         .all(|r| r.gateway == Some("198.51.100.254".parse().unwrap())));
+}
+
+#[tokio::test]
+async fn sharing_does_not_import_routes_from_unselected_policy_tables() {
+    let network = FakeNetworkProvider::all_up();
+    let mut foreign = test_route("203.0.113.7/32", Some("198.51.100.99"), 1);
+    foreign.table = 51820;
+    network.routes.lock().unwrap().push(foreign.clone());
+    let state = sharing::desired(&network, &desired()).await.unwrap();
+    sharing::restore(&network, &state).await.unwrap();
+    let routes = network.routes.lock().unwrap();
+    assert!(routes.contains(&foreign));
+    assert!(!routes
+        .iter()
+        .any(|r| r.protocol == 203 && r.destination == foreign.destination));
+}
+
+#[tokio::test]
+async fn sharing_failed_gateway_replacement_preserves_previous_route_and_selectors() {
+    let network = FakeNetworkProvider::all_up();
+    let wanted = desired();
+    sharing::restore(
+        &network,
+        &sharing::desired(&network, &wanted).await.unwrap(),
+    )
+    .await
+    .unwrap();
+    let before = sharing::observe(&network).await.unwrap();
+    for route in network.routes.lock().unwrap().iter_mut() {
+        if route.table == 254 && route.destination.prefix_len() == 0 {
+            route.gateway = Some("198.51.100.254".parse().unwrap());
+        }
+    }
+    let target = sharing::desired(&network, &wanted).await.unwrap();
+    network.fail_next_route.store(true, Ordering::SeqCst);
+    assert!(sharing::restore(&network, &target).await.is_err());
+    assert_eq!(sharing::observe(&network).await.unwrap(), before);
+    sharing::restore(&network, &target).await.unwrap();
+    assert!(sharing::current(&network, &wanted).await.unwrap());
 }
