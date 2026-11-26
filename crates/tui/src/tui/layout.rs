@@ -297,10 +297,15 @@ pub(crate) fn help_pairs(app: &TuiApp) -> Vec<(&'static str, &'static str)> {
     if app.screen == Screen::PendingChange {
         if let Some(change) = &app.confirmation.pending {
             if !change.can_rollback() {
-                return vec![("Esc", "back")];
+                return vec![("Enter/Esc", "back")];
             }
             if !change.can_commit() {
-                return vec![("Esc", "retry rollback")];
+                return vec![
+                    ("Tab", "action"),
+                    ("Enter", "activate"),
+                    ("r/Esc", "retry rollback"),
+                    ("b", "back"),
+                ];
             }
         }
     }
@@ -371,7 +376,7 @@ pub(crate) fn screen_help_pairs(screen: Screen) -> Vec<(&'static str, &'static s
     match screen {
         Screen::PendingTransactions => vec![
             ("↑/↓", "select"),
-            ("Enter", "view / cancel"),
+            ("Enter/click", "actions"),
             ("Esc", "back"),
         ],
         Screen::Dashboard => vec![

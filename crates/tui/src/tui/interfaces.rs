@@ -1017,6 +1017,24 @@ pub(crate) fn render_preview(frame: &mut ratatui::Frame<'_>, area: Rect, app: &m
 const PENDING_COMMIT_LABEL: &str = "[Confirm changes]";
 const PENDING_ROLLBACK_LABEL: &str = "[Roll back now]";
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+enum PendingAction {
+    Confirm = 0,
+    Rollback = 1,
+    Back = 2,
+}
+
+fn pending_actions(change: &traffic_masq_protocol::PendingNetworkChange) -> Vec<PendingAction> {
+    if change.can_commit() {
+        vec![PendingAction::Confirm, PendingAction::Rollback]
+    } else if change.can_rollback() {
+        vec![PendingAction::Rollback, PendingAction::Back]
+    } else {
+        vec![PendingAction::Back]
+    }
+}
+
 pub(crate) fn render_pending(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiApp) {
     let Some(change) = &app.confirmation.pending else {
         return;
@@ -1075,13 +1093,44 @@ pub(crate) fn render_pending(frame: &mut ratatui::Frame<'_>, area: Rect, app: &m
             "Commit outcome unknown. Repair storage access and restart the daemon."
         };
         lines[2] = Line::from(message);
+        let actions = pending_actions(change);
+        if !actions
+            .iter()
+            .any(|action| *action as usize == app.confirmation.pending_focus)
+        {
+            app.confirmation.pending_focus = actions[0] as usize;
+        }
         let block = panel("Network change recovery");
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).split(inner);
         frame.render_widget(
             Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false }),
-            inner,
+            chunks[0],
         );
+        let mut buttons = Vec::new();
+        for (row, action) in actions.iter().enumerate() {
+            let label = match action {
+                PendingAction::Rollback => "Retry rollback",
+                PendingAction::Back => "Back (transaction stays pending)",
+                PendingAction::Confirm => unreachable!(),
+            };
+            let selected = app.confirmation.pending_focus == *action as usize;
+            buttons.push(Line::styled(
+                format!("{}[{label}]", if selected { "▶ " } else { "  " }),
+                Style::default().fg(if selected { theme::ACCENT } else { theme::TEXT }),
+            ));
+            app.ui.buttons.push((
+                Rect::new(
+                    chunks[1].x,
+                    chunks[1].y + row as u16,
+                    (label.len() as u16 + 4).min(chunks[1].width),
+                    1,
+                ),
+                *action as usize,
+            ));
+        }
+        frame.render_widget(Paragraph::new(buttons), chunks[1]);
         return;
     }
     let block = panel("Network · Confirmation");
@@ -2012,6 +2061,16 @@ async fn apply_preview(app: &mut TuiApp, client: &ApiClient) {
 }
 
 pub(crate) async fn handle_pending_key(app: &mut TuiApp, key: KeyCode, client: &ApiClient) {
+    let Some(change) = app.confirmation.pending.as_ref() else {
+        app.screen = app.confirmation.pending_return_screen;
+        return;
+    };
+    let actions = pending_actions(change);
+    let index = actions
+        .iter()
+        .position(|action| *action as usize == app.confirmation.pending_focus)
+        .unwrap_or(0);
+    app.confirmation.pending_focus = actions[index] as usize;
     if matches!(
         key,
         KeyCode::Tab
@@ -2021,13 +2080,26 @@ pub(crate) async fn handle_pending_key(app: &mut TuiApp, key: KeyCode, client: &
             | KeyCode::Left
             | KeyCode::Right
     ) {
-        app.confirmation.pending_focus = 1 - app.confirmation.pending_focus.min(1);
+        let backwards = matches!(key, KeyCode::BackTab | KeyCode::Up | KeyCode::Left);
+        let next = if backwards {
+            (index + actions.len() - 1) % actions.len()
+        } else {
+            (index + 1) % actions.len()
+        };
+        app.confirmation.pending_focus = actions[next] as usize;
         return;
     }
-
     match key {
-        KeyCode::Enter => finish_pending(app, client, app.confirmation.pending_focus == 0).await,
+        KeyCode::Enter => match actions[index] {
+            PendingAction::Confirm => finish_pending(app, client, true).await,
+            PendingAction::Rollback => finish_pending(app, client, false).await,
+            PendingAction::Back => app.screen = app.confirmation.pending_return_screen,
+        },
         KeyCode::Esc => finish_pending(app, client, false).await,
+        KeyCode::Char('b') if !change.can_commit() => {
+            app.screen = app.confirmation.pending_return_screen;
+        }
+        KeyCode::Char('r') if change.can_rollback() => finish_pending(app, client, false).await,
         _ => {}
     }
 }
@@ -2069,6 +2141,9 @@ async fn finish_pending(app: &mut TuiApp, client: &ApiClient, commit: bool) {
             app.screen = app.confirmation.pending_return_screen;
         }
         Ok(Response::Error { message }) => {
+            if let Some(change) = app.confirmation.pending.as_mut() {
+                change.last_error = Some(message.clone());
+            }
             app.push_message(LogLevel::Error, message);
         }
         Ok(response) => app.push_message(

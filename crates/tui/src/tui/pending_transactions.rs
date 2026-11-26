@@ -83,12 +83,19 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiAp
         ));
     }
     for change in &app.dashboard.pending_network_changes {
+        let status = if change.can_commit() {
+            format!(
+                "Awaiting confirmation | rollback in {}s",
+                change.expires_at_unix.saturating_sub(now)
+            )
+        } else if change.can_rollback() {
+            "Recovery required | retry rollback".into()
+        } else {
+            "Commit outcome unknown | rollback blocked".into()
+        };
         rows.push(ListItem::new(format!(
-            "{} | {:?} | rollback in {}s | {}",
-            change.interface,
-            change.phase,
-            change.expires_at_unix.saturating_sub(now),
-            change.token
+            "{} | {status} | {}",
+            change.interface, change.token
         )));
     }
     if let Some(RouterTransaction {
@@ -120,15 +127,39 @@ pub(super) fn render(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mut TuiAp
     if rows.is_empty() {
         rows.push(ListItem::new("No pending transactions"));
     }
+    let row_count = rows.len();
+    let block = Block::default().borders(Borders::ALL);
+    let inner = block.inner(area);
     let list = List::new(rows)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Pending transactions — Enter: view / cancel · Esc: back "),
+                .title(" Pending transactions — Enter/click: actions · Esc: back "),
         )
         .highlight_style(Style::default().fg(theme::SELECTED_FG).bg(theme::ACCENT))
         .highlight_symbol("▶ ");
     frame.render_stateful_widget(list, area, &mut app.pending_transactions.list);
+    app.ui.list_area = Some(inner);
+    app.ui.list_row_height = 1;
+    app.ui.list_count = row_count;
+    app.ui.list_scroll_offset = app.pending_transactions.list.offset();
+}
+
+fn select_row(app: &mut TuiApp, row: usize) -> bool {
+    let Some(index) = row.checked_sub(usize::from(!app.dashboard.pending_known)) else {
+        return false;
+    };
+    let Some(token) = tokens(app).get(index).cloned() else {
+        return false;
+    };
+    app.pending_transactions.selected = Some(token);
+    true
+}
+
+pub(super) async fn open_row(app: &mut TuiApp, row: usize, client: &ApiClient) {
+    if select_row(app, row) {
+        handle_key(app, KeyCode::Enter, client).await;
+    }
 }
 
 pub(super) async fn handle_key(app: &mut TuiApp, key: KeyCode, _client: &ApiClient) {
@@ -363,6 +394,167 @@ mod tests {
             Some(change.token.as_str())
         );
         assert!(app.pending_transactions.router.is_none());
+    }
+
+    fn recovery_app(phase: NetworkChangePhase) -> TuiApp {
+        let change = PendingNetworkChange {
+            phase,
+            last_error: Some("AP ownership changed; rollback incomplete".into()),
+            ..network_change()
+        };
+        let mut app = TuiApp {
+            screen: Screen::PendingChange,
+            ..Default::default()
+        };
+        app.confirmation.pending_return_screen = Screen::PendingTransactions;
+        app.confirmation.pending = Some(change.clone());
+        app.dashboard.pending_network_changes = vec![change];
+        app.dashboard.pending_known = true;
+        app
+    }
+
+    fn draw_app(app: &mut TuiApp, width: u16, height: u16) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| super::super::render(frame, app, false))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn recovery_enter_retries_and_failed_rollback_keeps_transaction_visible() {
+        for phase in [
+            NetworkChangePhase::RecoveryRequired,
+            NetworkChangePhase::RollbackRequired,
+        ] {
+            let mut app = recovery_app(phase);
+            let change = app.confirmation.pending.clone().unwrap();
+            let mock = test_api::mock(vec![
+                Response::Error {
+                    message: "Still cannot restore AP ownership".into(),
+                },
+                Response::NetworkChangeRolledBack { change },
+            ])
+            .await;
+            let text = draw_app(&mut app, 80, 24);
+            assert!(text.contains("Retry rollback"));
+            assert!(text.contains("Back (transaction stays pending)"));
+            assert!(!text.contains("[Confirm changes]"));
+            assert_eq!(app.confirmation.pending_focus, 1);
+            super::super::handle_key(&mut app, KeyCode::Enter, &mock.client, false).await;
+            assert_eq!(app.screen, Screen::PendingChange);
+            assert!(app.confirmation.pending.is_some());
+            assert!(draw_app(&mut app, 80, 24).contains("Still cannot restore AP ownership"));
+            super::super::handle_key(&mut app, KeyCode::Enter, &mock.client, false).await;
+            assert_eq!(app.screen, Screen::PendingTransactions);
+            assert!(app.confirmation.pending.is_none());
+            let calls = mock.calls.lock().unwrap();
+            assert_eq!(calls.len(), 2);
+            assert!(calls
+                .iter()
+                .all(|call| call.body["type"] == "rollback_network_change"
+                    && call.body["token"] == "from-another-window"));
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_back_preserves_pending_and_mouse_retry_uses_same_token() {
+        let mock = test_api::mock(vec![]).await;
+        let mut app = recovery_app(NetworkChangePhase::RecoveryRequired);
+        draw_app(&mut app, 80, 24);
+        super::super::handle_key(&mut app, KeyCode::Tab, &mock.client, false).await;
+        assert_eq!(app.confirmation.pending_focus, 2);
+        super::super::handle_key(&mut app, KeyCode::Enter, &mock.client, false).await;
+        assert_eq!(app.screen, Screen::PendingTransactions);
+        assert!(app.confirmation.pending.is_some());
+        assert!(mock.calls.lock().unwrap().is_empty());
+
+        handle_key(&mut app, KeyCode::Enter, &mock.client).await;
+        let change = app.confirmation.pending.clone().unwrap();
+        let mock = test_api::mock(vec![Response::NetworkChangeRolledBack { change }]).await;
+        for (width, height) in [(120, 40), (80, 24)] {
+            draw_app(&mut app, width, height);
+            assert!(app
+                .ui
+                .buttons
+                .iter()
+                .all(|(rect, _)| rect.y + rect.height < height));
+        }
+        let (rect, _) = app.ui.buttons.iter().find(|(_, slot)| *slot == 1).unwrap();
+        let event = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        };
+        super::super::handle_mouse(&mut app, event, &mock.client, false).await;
+        assert!(app.confirmation.pending.is_none());
+        assert_eq!(
+            mock.calls.lock().unwrap()[0].body["token"],
+            "from-another-window"
+        );
+    }
+
+    #[tokio::test]
+    async fn indeterminate_commit_only_offers_back_and_small_terminal_can_retry_recovery() {
+        let mock = test_api::mock(vec![]).await;
+        let mut app = recovery_app(NetworkChangePhase::CommitIndeterminate);
+        let text = draw_app(&mut app, 80, 24);
+        assert!(!text.contains("[Retry rollback]"));
+        assert_eq!(app.ui.buttons.len(), 1);
+        super::super::handle_key(&mut app, KeyCode::Enter, &mock.client, false).await;
+        assert_eq!(app.screen, Screen::PendingTransactions);
+        assert!(app.confirmation.pending.is_some());
+        assert!(mock.calls.lock().unwrap().is_empty());
+
+        let mut app = recovery_app(NetworkChangePhase::RecoveryRequired);
+        let change = app.confirmation.pending.clone().unwrap();
+        let mock = test_api::mock(vec![Response::NetworkChangeRolledBack { change }]).await;
+        draw_app(&mut app, 60, 15);
+        assert!(app.ui.buttons.is_empty());
+        assert!(!app.ui.input_enabled);
+        super::super::handle_key(&mut app, KeyCode::Enter, &mock.client, false).await;
+        assert_eq!(app.screen, Screen::PendingTransactions);
+        assert!(app.confirmation.pending.is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_list_mouse_opens_selected_token_after_warning_row() {
+        let mock = test_api::mock(vec![]).await;
+        let mut app = recovery_app(NetworkChangePhase::RecoveryRequired);
+        app.screen = Screen::PendingTransactions;
+        app.dashboard.pending_known = false;
+        app.dashboard
+            .pending_network_changes
+            .push(PendingNetworkChange {
+                token: "second-token".into(),
+                ..network_change()
+            });
+        draw_app(&mut app, 80, 24);
+        let area = app.ui.list_area.unwrap();
+        let mut event = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: area.x,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        };
+        super::super::handle_mouse(&mut app, event, &mock.client, false).await;
+        assert_eq!(app.screen, Screen::PendingTransactions);
+        event.row += 2;
+        super::super::handle_mouse(&mut app, event, &mock.client, false).await;
+        assert_eq!(app.screen, Screen::PendingChange);
+        assert_eq!(
+            app.confirmation.pending.as_ref().unwrap().token,
+            "second-token"
+        );
+        assert!(mock.calls.lock().unwrap().is_empty());
     }
 
     fn router_pending(expires_at_unix: Option<u64>) -> Response {

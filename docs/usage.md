@@ -413,6 +413,15 @@ connectivity, then choose **Confirm changes** or **Roll back now**. Without
 confirmation, the countdown schedules daemon rollback. Rollback failures retain
 recovery details. Ctrl+G opens the full operation result.
 
+On Dashboard, press **p** to open pending transactions. Select a row with the
+arrows and Enter, or click it, to open its actions. If interface rollback failed,
+**Retry rollback** is selected instead of the unavailable confirmation action.
+Tab selects **Back (transaction stays pending)**; Enter activates the selected
+action. Esc or **r** retries rollback, and **b** returns to the list. A failed
+retry keeps the transaction and displays its error; returning to the list does
+not cancel or discard recovery. If the commit outcome is unknown, only Back is
+available until durable recovery is resolved.
+
 ### Routes and Internet sharing
 
 In **Route**, Tab/Shift+Tab switches between routes and **Actions**. Up/Down

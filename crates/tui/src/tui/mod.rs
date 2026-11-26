@@ -1311,6 +1311,9 @@ async fn handle_mouse(app: &mut TuiApp, mouse: MouseEvent, client: &ApiClient, d
                             Screen::InterfaceList | Screen::DhcpInterfaceList => {
                                 interfaces::set_interface_selection(app, index);
                             }
+                            Screen::PendingTransactions => {
+                                pending_transactions::open_row(app, index, client).await;
+                            }
                             Screen::WifiStations => wifi_stations::select_row(app, index),
                             Screen::DhcpClient => {
                                 dhcp_client::select_row(app, index);
@@ -1379,6 +1382,9 @@ async fn handle_mouse(app: &mut TuiApp, mouse: MouseEvent, client: &ApiClient, d
             }
         }
         MouseEventKind::ScrollUp => match app.screen {
+            Screen::PendingTransactions => {
+                pending_transactions::handle_key(app, KeyCode::Up, client).await
+            }
             Screen::Preview => interfaces::handle_preview_key(app, KeyCode::Up, client).await,
             Screen::Wifi => wifi::handle_wifi_key(app, KeyCode::Up, client).await,
             Screen::WifiScan => wifi::handle_wifi_scan_key(app, KeyCode::Up, client).await,
@@ -1416,6 +1422,9 @@ async fn handle_mouse(app: &mut TuiApp, mouse: MouseEvent, client: &ApiClient, d
             _ => {}
         },
         MouseEventKind::ScrollDown => match app.screen {
+            Screen::PendingTransactions => {
+                pending_transactions::handle_key(app, KeyCode::Down, client).await
+            }
             Screen::Preview => interfaces::handle_preview_key(app, KeyCode::Down, client).await,
             Screen::Wifi => wifi::handle_wifi_key(app, KeyCode::Down, client).await,
             Screen::WifiScan => wifi::handle_wifi_scan_key(app, KeyCode::Down, client).await,
@@ -1576,7 +1585,7 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut TuiApp, direct: bool) {
     app.ui = UiLayout::default();
     if area.width < MIN_TERMINAL_WIDTH || area.height < MIN_TERMINAL_HEIGHT {
         let recovery_hint = app.confirmation.pending.as_ref().filter(|change| !change.can_commit()).map(|change| {
-            if change.can_rollback() { "Rollback recovery required. Esc: retry rollback. Q: exit." }
+            if change.can_rollback() { "Rollback recovery required. Enter/Esc: retry rollback. Q: exit." }
             else { "Commit outcome unknown. Repair storage and restart the daemon. Esc: back. Q: exit." }
         }).or_else(|| app.router_ui.router_pending.as_ref().filter(|view| view.recovery_required()).map(|view| {
             if view.commit_indeterminate() { "Commit outcome unknown. Repair storage and restart the daemon. Esc: back. Q: exit." }
@@ -1717,9 +1726,8 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut TuiApp, direct: bool) {
 fn focus_action_slot(app: &mut TuiApp, slot: usize) {
     match app.screen {
         Screen::Dashboard => {}
-        Screen::PendingChange | Screen::RouterPending => {
-            app.confirmation.pending_focus = slot.min(1)
-        }
+        Screen::PendingChange => app.confirmation.pending_focus = slot.min(2),
+        Screen::RouterPending => app.confirmation.pending_focus = slot.min(1),
         Screen::DnsDefaults => dns_defaults::focus_action(app, slot),
         Screen::Access => access::focus_action(app, slot),
         Screen::InterfaceEditor => interfaces::focus_action(app, slot),

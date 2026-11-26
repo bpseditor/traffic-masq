@@ -113,6 +113,7 @@ Because misconfiguring an IP address or firewall rule can sever SSH access, inte
    - Pressing **Enter** sends a commit request, making the change permanent.
    - Pressing **Esc** sends a rollback request; completion must be verified.
    - If the connection drops or the operator does not respond, expiry schedules daemon rollback. Admitted operations, retry cycles and commit uncertainty can delay or fence recovery; inspect pending state. See the [timing contract](../../../../docs/architecture.md#commit-uncertainty-and-confirmation-timing).
+   - Interface recovery keeps visible **Retry rollback** and **Back (transaction stays pending)** buttons. Retry is selected initially; Tab/arrows move between available actions and Enter activates the selection. Esc/r retries rollback; b returns without clearing recovery. Commit-indeterminate state offers only Back. Failed requests retain the token and show the returned error.
    - If rollback itself fails, the router pending screen switches to recovery mode: commit is removed, the `TM-REC-207` notice and individual failures are shown, **Enter** retries rollback, and **Esc** returns to the Route screen without discarding recovery state.
    - On the Route screen, degraded recovery shows the recovery code, invariant, blocked operation, action and runbook. Press **r** to retry a failed rollback; for `TM-REC-208` journal-cleanup-pending, cleanup retries automatically and **r** refreshes status.
 3. **Disconnect Handling:** If the daemon becomes unreachable while on a pending screen, the TUI retains the pending change state and warns the operator that the outcome is unverified rather than falsely claiming success.
@@ -403,7 +404,7 @@ Route drafts are labelled separately from runtime state. Standalone traffic poli
 is entered from Route, while the global chain continues to use the shared router
 draft and confirmation flow. See the [architecture contract](../../../../docs/vpn-ui-architecture.md).
 
-On Dashboard, press **p** to view daemon pending transactions, including changes started in another window. Select a row and press **Enter** to open its confirmation/rollback screen; **Roll back now** is selected initially. The list refreshes automatically. Interface and Router/VPN deadlines come from the daemon and are not renewed by opening another client.
+On Dashboard, press **p** to view daemon pending transactions, including changes started in another window. Select a row and press **Enter**, or click the row, to open its confirmation/rollback screen; **Roll back now** is selected initially. The list refreshes automatically. Interface and Router/VPN deadlines come from the daemon and are not renewed by opening another client.
 
 If a pending-state read fails, the list keeps the last observed rows and shows an unavailable-state warning. Cached empty results do not prove that no transactions are pending; the warning clears after a successful refresh.
 
