@@ -913,6 +913,9 @@ pub struct WifiConcurrentSupport {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InterfaceEditRequest {
+    /// None preserves existing DHCP settings for older clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dhcp_client_enabled: Option<bool>,
     /// Receive Wi-Fi and expose a virtual AP on the same physical radio.
     #[serde(default)]
     pub wifi_concurrent: bool,

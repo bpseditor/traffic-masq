@@ -438,6 +438,7 @@ async fn run_physical_tui_test(scan: bool) -> Result<()> {
             return Ok(());
         }
         let edit = traffic_masq::api::model::InterfaceEditRequest {
+            dhcp_client_enabled: None,
             wifi_concurrent: false,
             randomize_mac: false,
             mac_address: None,
@@ -490,6 +491,7 @@ async fn run_physical_tui_test(scan: bool) -> Result<()> {
         }
         println!("Real daemon IP preview, apply, kernel verification and commit passed");
         let clear = traffic_masq::api::model::InterfaceEditRequest {
+            dhcp_client_enabled: None,
             wifi_concurrent: false,
             randomize_mac: false,
             mac_address: None,

@@ -342,6 +342,7 @@ async fn authenticated_http_client_controls_daemon_over_unix_socket() -> Result<
         wifi_client: None,
     };
     let interface_edit = traffic_masq::api::model::InterfaceEditRequest {
+        dhcp_client_enabled: None,
         wifi_concurrent: false,
         randomize_mac: false,
         mac_address: None,
@@ -433,6 +434,7 @@ async fn authenticated_http_client_controls_daemon_over_unix_socket() -> Result<
         .request(&Request::DryRunInterfaceEdit {
             interface: "test0".to_string(),
             edit: traffic_masq::api::model::InterfaceEditRequest {
+                dhcp_client_enabled: None,
                 wifi_concurrent: false,
                 randomize_mac: false,
                 mac_address: None,
@@ -470,6 +472,7 @@ async fn authenticated_http_client_controls_daemon_over_unix_socket() -> Result<
         ..interface_config.clone()
     };
     let managed_false_edit = traffic_masq::api::model::InterfaceEditRequest {
+        dhcp_client_enabled: None,
         wifi_concurrent: false,
         randomize_mac: false,
         mac_address: None,

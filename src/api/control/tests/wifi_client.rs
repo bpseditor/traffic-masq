@@ -21,6 +21,7 @@ fn interface_edit_preserves_client_and_nat_settings() {
     };
     let (config, _) = interface_edit_request_to_config(
         InterfaceEditRequest {
+            dhcp_client_enabled: None,
             wifi_concurrent: false,
             randomize_mac: false,
             mac_address: None,

@@ -244,7 +244,7 @@ async fn keyboard_ip_and_mac_edit_previews_applies_and_confirms_the_typed_addres
     for character in "198.18.0.1/24".chars() {
         handle_editor_key(&mut app, KeyCode::Char(character), &client).await;
     }
-    for _ in 0..4 {
+    for _ in 0..5 {
         super::super::handle_key(&mut app, KeyCode::Tab, &client, false).await;
     }
     assert_eq!(
@@ -291,6 +291,8 @@ async fn keyboard_ip_and_mac_edit_previews_applies_and_confirms_the_typed_addres
 
 fn default_route_editor(allow_management_change: bool) -> InterfaceEditor {
     InterfaceEditor {
+        dhcp_client_enabled: false,
+        original_dhcp_client_enabled: false,
         wifi_concurrent_support: None,
         wifi_concurrent: false,
         randomize_mac: false,
@@ -721,6 +723,7 @@ async fn mac_controls_require_management_and_switching_it_off_clears_the_mac() {
         app.interface_ui.editor.as_ref().unwrap().mac_address.len(),
         16
     );
+    handle_editor_key(&mut app, KeyCode::Up, &client).await;
     handle_editor_key(&mut app, KeyCode::Up, &client).await;
     handle_editor_key(&mut app, KeyCode::Up, &client).await;
     handle_editor_key(&mut app, KeyCode::Up, &client).await;
@@ -1537,4 +1540,69 @@ fn new_interface_mac_policy_uses_preferences_but_saved_policy_takes_precedence()
             assert_eq!(initial_randomize_mac(&app, "eth0", Some(&config)), saved);
         }
     }
+}
+
+#[test]
+fn input_defaults_dhcp_on_but_static_and_unmanaged_edits_disable_it() {
+    let mut editor = default_route_editor(true);
+    editor.role = InterfaceRole::None;
+    editor.cidr.clear();
+    editor.cycle_role();
+    assert_eq!(editor.role, InterfaceRole::Input);
+    assert!(editor.dhcp_client_enabled);
+    assert_eq!(
+        editor.edit_request().unwrap().dhcp_client_enabled,
+        Some(true)
+    );
+    editor.cidr = "192.168.144.2/24".into();
+    assert_eq!(
+        editor.edit_request().unwrap().dhcp_client_enabled,
+        Some(false)
+    );
+    editor.cidr.clear();
+    editor.original_cidr.clear();
+    editor.managed = false;
+    assert_eq!(
+        editor.edit_request().unwrap().dhcp_client_enabled,
+        Some(false)
+    );
+}
+
+#[tokio::test]
+async fn dhcp_checkbox_has_visible_mouse_target_and_keyboard_toggle() {
+    use ratatui::{backend::TestBackend, Terminal};
+    let mut editor = default_route_editor(true);
+    editor.role = InterfaceRole::Input;
+    editor.cidr.clear();
+    editor.field = InterfaceEditorField::DhcpClient;
+    let mut app = TuiApp {
+        screen: Screen::InterfaceEditor,
+        ..Default::default()
+    };
+    app.interface_ui.editor = Some(editor);
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| super::super::render(frame, &mut app, false))
+        .unwrap();
+    let (rect, _) = app
+        .ui
+        .buttons
+        .iter()
+        .find(|(_, slot)| *slot == DHCP_CLIENT_BUTTON_SLOT)
+        .unwrap();
+    assert!(rect.y < 24 && rect.x + rect.width <= 80);
+    focus_action(&mut app, DHCP_CLIENT_BUTTON_SLOT);
+    handle_editor_key(
+        &mut app,
+        KeyCode::Char(' '),
+        &ApiClient::new("/nonexistent.sock"),
+    )
+    .await;
+    assert!(
+        app.interface_ui
+            .editor
+            .as_ref()
+            .unwrap()
+            .dhcp_client_enabled
+    );
 }

@@ -411,3 +411,8 @@ If a pending-state read fails, the list keeps the last observed rows and shows a
 Dashboard inventory is the configuration source for its returned revision. Per-interface configuration reads are used only for legacy interface-only responses; do not re-fetch configuration after inventory, as this mixes snapshots and adds one request per interface.
 
 CLI password prompts use `Zeroizing<String>` so early I/O errors and cancelled futures also clear collected secrets on drop. Keep this guard when adding authentication prompts.
+
+The interface editor's DHCP-client checkbox defaults on when entering Input.
+It retains saved selections and local drafts, is included in preview/apply and
+missing-device saves, and only takes effect for managed Input without static
+IPv4. Its mouse target is registered and clipped with the editor's other rows.

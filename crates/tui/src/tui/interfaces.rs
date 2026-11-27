@@ -20,6 +20,7 @@ pub(crate) enum InterfaceEditorField {
     RemoveIpv4,
     Role,
     Managed,
+    DhcpClient,
     GenerateMac,
     Advanced,
     MacAddress,
@@ -29,11 +30,12 @@ pub(crate) enum InterfaceEditorField {
     Reset,
 }
 
-const INTERFACE_EDITOR_FIELDS: [InterfaceEditorField; 11] = [
+const INTERFACE_EDITOR_FIELDS: [InterfaceEditorField; 12] = [
     InterfaceEditorField::Cidr,
     InterfaceEditorField::RemoveIpv4,
     InterfaceEditorField::Role,
     InterfaceEditorField::Managed,
+    InterfaceEditorField::DhcpClient,
     InterfaceEditorField::GenerateMac,
     InterfaceEditorField::Advanced,
     InterfaceEditorField::MacAddress,
@@ -45,6 +47,8 @@ const INTERFACE_EDITOR_FIELDS: [InterfaceEditorField; 11] = [
 
 #[derive(Debug, Clone)]
 pub(crate) struct InterfaceEditor {
+    pub(crate) dhcp_client_enabled: bool,
+    pub(crate) original_dhcp_client_enabled: bool,
     pub(crate) wifi_concurrent_support: Option<traffic_masq_protocol::WifiConcurrentSupport>,
     pub(crate) wifi_concurrent: bool,
     pub(crate) randomize_mac: bool,
@@ -97,10 +101,14 @@ impl InterfaceEditor {
         } else {
             self.role = next_role(self.role);
         }
+        if previous != InterfaceRole::Input && self.role == InterfaceRole::Input {
+            self.dhcp_client_enabled = true;
+        }
     }
 
     fn dirty(&self) -> bool {
-        self.randomize_mac != self.original_randomize_mac
+        self.dhcp_client_enabled != self.original_dhcp_client_enabled
+            || self.randomize_mac != self.original_randomize_mac
             || self.wifi_concurrent
                 != self
                     .saved_config
@@ -202,6 +210,12 @@ impl InterfaceEditor {
             );
         }
         Ok(InterfaceEditRequest {
+            dhcp_client_enabled: Some(
+                self.dhcp_client_enabled
+                    && self.role == InterfaceRole::Input
+                    && self.managed
+                    && self.cidr.trim().is_empty(),
+            ),
             wifi_concurrent: self.wifi_concurrent,
             randomize_mac: self.randomize_mac && self.managed,
             mac_address,
@@ -522,6 +536,7 @@ const FORGET_BUTTON_SLOT: usize = 3;
 const RESET_BUTTON_SLOT: usize = 4;
 const ADVANCED_BUTTON_SLOT: usize = 5;
 const GENERATE_MAC_BUTTON_SLOT: usize = 6;
+const DHCP_CLIENT_BUTTON_SLOT: usize = 7;
 const FORGET_LABEL: &str = "[Delete saved settings]";
 const RESET_LABEL: &str = "[Restore settings from file]";
 
@@ -669,6 +684,14 @@ pub(crate) fn render_editor(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mu
         ),
         InterfaceEditorField::Managed,
     ));
+    let dhcp_client_row = lines.len();
+    lines.push(row(
+        &format!(
+            "[{}] Enable DHCP client (Input, managed, no static IPv4)",
+            if editor.dhcp_client_enabled { "x" } else { " " }
+        ),
+        InterfaceEditorField::DhcpClient,
+    ));
     if editor.wifi_concurrent {
         lines.push(Line::styled(
             format!(
@@ -810,6 +833,7 @@ pub(crate) fn render_editor(frame: &mut ratatui::Frame<'_>, area: Rect, app: &mu
     // Keep both a selected input and its validation message in the viewport.
     let offset = super::layout::focused_lines_offset(&lines, chunks[0].height.saturating_sub(1));
     for (index, slot) in [
+        (dhcp_client_row, DHCP_CLIENT_BUTTON_SLOT),
         (remove_row, REMOVE_IPV4_BUTTON_SLOT),
         (advanced_row, ADVANCED_BUTTON_SLOT),
         (generate_mac_row, GENERATE_MAC_BUTTON_SLOT),
@@ -910,6 +934,18 @@ pub(crate) fn render_preview(frame: &mut ratatui::Frame<'_>, area: Rect, app: &m
     }
 
     if let Some(editor) = &app.interface_ui.editor {
+        lines.push(Line::from(format!(
+            "DHCP client: {}",
+            if editor.dhcp_client_enabled
+                && editor.role == InterfaceRole::Input
+                && editor.managed
+                && editor.cidr.trim().is_empty()
+            {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        )));
         lines.push(Line::from(if editor.randomize_mac {
             "MAC policy: automatic; a fresh address for each connection/network session"
         } else {
@@ -1224,6 +1260,7 @@ pub(crate) fn render_pending(frame: &mut ratatui::Frame<'_>, area: Rect, app: &m
 pub(crate) fn focus_action(app: &mut TuiApp, slot: usize) {
     if let Some(editor) = app.interface_ui.editor.as_mut() {
         editor.field = match slot {
+            DHCP_CLIENT_BUTTON_SLOT => InterfaceEditorField::DhcpClient,
             ADVANCED_BUTTON_SLOT => InterfaceEditorField::Advanced,
             GENERATE_MAC_BUTTON_SLOT => InterfaceEditorField::GenerateMac,
             REMOVE_IPV4_BUTTON_SLOT => InterfaceEditorField::RemoveIpv4,
@@ -1378,6 +1415,15 @@ pub(crate) async fn open_editor(app: &mut TuiApp, client: &ApiClient) {
         if draft.randomize_mac == draft.original_randomize_mac {
             draft.randomize_mac = randomize_mac;
         }
+        let dhcp_enabled = entry
+            .configured
+            .as_ref()
+            .and_then(|c| c.dhcp_client.as_ref())
+            .is_some_and(|c| c.enabled);
+        if draft.dhcp_client_enabled == draft.original_dhcp_client_enabled {
+            draft.dhcp_client_enabled = dhcp_enabled;
+        }
+        draft.original_dhcp_client_enabled = dhcp_enabled;
         draft.original_randomize_mac = randomize_mac;
         draft.original_cidr = cidr;
         draft.original_role = role;
@@ -1487,6 +1533,14 @@ pub(crate) async fn open_editor(app: &mut TuiApp, client: &ApiClient) {
                 .map(|dhcp| format!("DHCP pool {}-{}", dhcp.pool_start, dhcp.pool_end));
             let cursor = super::input::grapheme_count(&cidr);
             app.interface_ui.editor = Some(InterfaceEditor {
+                dhcp_client_enabled: config
+                    .as_ref()
+                    .and_then(|c| c.dhcp_client.as_ref())
+                    .is_some_and(|c| c.enabled),
+                original_dhcp_client_enabled: config
+                    .as_ref()
+                    .and_then(|c| c.dhcp_client.as_ref())
+                    .is_some_and(|c| c.enabled),
                 wifi_concurrent_support,
                 wifi_concurrent: config.as_ref().is_some_and(|c| c.wifi_concurrent),
                 randomize_mac: initial_randomize_mac(app, &name, config.as_ref()),
@@ -1760,6 +1814,9 @@ pub(crate) async fn handle_editor_key(app: &mut TuiApp, key: KeyCode, client: &A
                     unmanaged_ip_attempt = true;
                 }
             }
+            InterfaceEditorField::DhcpClient => {
+                editor.dhcp_client_enabled = !editor.dhcp_client_enabled;
+            }
             InterfaceEditorField::Role => editor.cycle_role(),
             InterfaceEditorField::Managed => {
                 editor.managed = !editor.managed;
@@ -1926,6 +1983,13 @@ pub(crate) async fn submit_dry_run(app: &mut TuiApp, client: &ApiClient) {
             app.push_message(LogLevel::Warn, "No saved interface configuration to edit");
             return;
         };
+        if edit.dhcp_client_enabled == Some(true) {
+            let mut dhcp = config.dhcp_client.take().unwrap_or_default();
+            dhcp.enabled = true;
+            config.dhcp_client = Some(dhcp);
+        } else if edit.dhcp_client_enabled == Some(false) {
+            config.dhcp_client = None;
+        }
         config.ipv4 = if edit.cidr.is_empty() {
             None
         } else {

@@ -51,6 +51,7 @@ fn interface_edit_request_preserves_existing_dhcp_settings() {
         wifi_client: None,
     };
     let edit = InterfaceEditRequest {
+        dhcp_client_enabled: None,
         wifi_concurrent: false,
         randomize_mac: false,
         mac_address: None,
@@ -86,6 +87,7 @@ fn removing_the_address_under_a_dhcp_server_says_what_to_disable_first() {
         wifi_client: None,
     };
     let edit = InterfaceEditRequest {
+        dhcp_client_enabled: None,
         wifi_concurrent: false,
         randomize_mac: false,
         mac_address: None,

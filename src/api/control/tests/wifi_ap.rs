@@ -16,6 +16,7 @@ fn interface_edit_request_preserves_existing_wifi_settings_while_managed() {
         wifi_client: None,
     };
     let edit = InterfaceEditRequest {
+        dhcp_client_enabled: None,
         wifi_concurrent: false,
         randomize_mac: false,
         mac_address: None,
@@ -50,6 +51,7 @@ fn interface_edit_request_drops_wifi_settings_when_unmanaged() {
         wifi_client: None,
     };
     let edit = InterfaceEditRequest {
+        dhcp_client_enabled: None,
         wifi_concurrent: false,
         randomize_mac: false,
         mac_address: None,

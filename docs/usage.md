@@ -1204,3 +1204,11 @@ requests over an unprotected host uplink. Profile DNS settings are not applied.
 IPv6 forwarding is blocked while VPN policy is active because its routing
 policy currently protects IPv4 only. Incoming IPv6 DNS proxy requests are also
 blocked, so switching address families cannot bypass the DNS protection.
+
+In the interface editor, changing the role to **Input** checks **Enable DHCP
+client** by default. Keep **Configure with traffic-masq** enabled and leave static
+IPv4 empty to obtain an uplink address through the embedded DHCP client. Uncheck
+the box to keep DHCP disabled. Review and confirm the complete change, including
+DHCP, before removing another network manager. Opening an existing Input retains
+its saved DHCP selection; selecting Input alone in a configuration file does not
+implicitly enable DHCP.

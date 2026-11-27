@@ -51,6 +51,7 @@ fn an_empty_cidr_removes_the_configured_address() {
         wifi_client: None,
     };
     let edit = InterfaceEditRequest {
+        dhcp_client_enabled: None,
         wifi_concurrent: false,
         randomize_mac: false,
         mac_address: None,
@@ -540,4 +541,34 @@ async fn explicit_cancellation_bypasses_busy_admission_without_applying_queued_r
         fixture.service.dispatch(Request::Ping).await,
         Response::Pong
     ));
+}
+
+#[test]
+fn input_editor_can_enable_disable_and_preserve_dhcp_client() {
+    let mut edit = InterfaceEditRequest {
+        dhcp_client_enabled: Some(true),
+        wifi_concurrent: false,
+        randomize_mac: false,
+        mac_address: None,
+        cidr: String::new(),
+        role: InterfaceRole::Input,
+        managed: true,
+        allow_management_change: false,
+    };
+    let (config, _) = interface_edit_request_to_config(edit.clone(), None).unwrap();
+    assert!(config.dhcp_client.as_ref().unwrap().enabled);
+    edit.dhcp_client_enabled = None;
+    let (preserved, _) = interface_edit_request_to_config(edit.clone(), Some(&config)).unwrap();
+    assert!(preserved.dhcp_client.as_ref().unwrap().enabled);
+    edit.dhcp_client_enabled = Some(false);
+    let (disabled, _) = interface_edit_request_to_config(edit.clone(), Some(&config)).unwrap();
+    assert!(disabled.dhcp_client.is_none());
+    edit.dhcp_client_enabled = Some(true);
+    edit.cidr = "192.168.144.2/24".into();
+    let (static_ip, _) = interface_edit_request_to_config(edit.clone(), Some(&config)).unwrap();
+    assert!(static_ip.dhcp_client.is_none());
+    edit.cidr.clear();
+    edit.role = InterfaceRole::Output;
+    let (output, _) = interface_edit_request_to_config(edit, Some(&config)).unwrap();
+    assert!(output.dhcp_client.is_none());
 }

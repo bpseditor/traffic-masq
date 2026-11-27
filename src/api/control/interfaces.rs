@@ -545,7 +545,17 @@ pub(super) fn interface_edit_request_to_config(
         None
     };
     let dhcp_client = if is_input && edit.managed && ipv4.is_none() {
-        existing.and_then(|config| config.dhcp_client.clone())
+        match edit.dhcp_client_enabled {
+            Some(true) => {
+                let mut config = existing
+                    .and_then(|c| c.dhcp_client.clone())
+                    .unwrap_or_default();
+                config.enabled = true;
+                Some(config)
+            }
+            Some(false) => None,
+            None => existing.and_then(|config| config.dhcp_client.clone()),
+        }
     } else {
         None
     };

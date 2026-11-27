@@ -69,6 +69,7 @@ fn interface_config() -> InterfaceConfig {
 
 fn interface_edit() -> InterfaceEditRequest {
     InterfaceEditRequest {
+        dhcp_client_enabled: None,
         wifi_concurrent: false,
         randomize_mac: false,
         mac_address: None,
