@@ -85,6 +85,7 @@ pub(crate) struct InterfaceEditor {
 
 impl InterfaceEditor {
     fn cycle_role(&mut self) {
+        let previous = self.role;
         if self.wifi_concurrent {
             self.role = InterfaceRole::None;
             self.wifi_concurrent = false;
@@ -1124,7 +1125,7 @@ pub(crate) fn render_pending(frame: &mut ratatui::Frame<'_>, area: Rect, app: &m
     }
     if !change.can_commit() {
         let message = if change.can_rollback() {
-            "Rollback recovery required. Confirmation is disabled; Esc retries rollback."
+            "Rollback recovery required. Confirmation is disabled; r retries rollback, Esc returns."
         } else {
             "Commit outcome unknown. Repair storage access and restart the daemon."
         };
@@ -1236,7 +1237,7 @@ pub(crate) fn render_pending(frame: &mut ratatui::Frame<'_>, area: Rect, app: &m
             ),
             Line::styled(
                 format!(
-                    "{}[Roll back now] (Esc)",
+                    "{}[Roll back now] (Enter)",
                     if app.confirmation.pending_focus == 1 {
                         "▶ "
                     } else {
@@ -2145,12 +2146,8 @@ pub(crate) async fn handle_pending_key(app: &mut TuiApp, key: KeyCode, client: &
             | KeyCode::Right
     ) {
         let backwards = matches!(key, KeyCode::BackTab | KeyCode::Up | KeyCode::Left);
-        let next = if backwards {
-            (index + actions.len() - 1) % actions.len()
-        } else {
-            (index + 1) % actions.len()
-        };
-        app.confirmation.pending_focus = actions[next] as usize;
+        app.confirmation.pending_focus =
+            super::input::move_wrapped(&actions, actions[index], !backwards) as usize;
         return;
     }
     match key {
@@ -2159,8 +2156,8 @@ pub(crate) async fn handle_pending_key(app: &mut TuiApp, key: KeyCode, client: &
             PendingAction::Rollback => finish_pending(app, client, false).await,
             PendingAction::Back => app.screen = app.confirmation.pending_return_screen,
         },
-        KeyCode::Esc => finish_pending(app, client, false).await,
-        KeyCode::Char('b') if !change.can_commit() => {
+        KeyCode::Esc => app.screen = app.confirmation.pending_return_screen,
+        KeyCode::Char('b') => {
             app.screen = app.confirmation.pending_return_screen;
         }
         KeyCode::Char('r') if change.can_rollback() => finish_pending(app, client, false).await,
@@ -2179,6 +2176,7 @@ async fn finish_pending(app: &mut TuiApp, client: &ApiClient, commit: bool) {
         }
         return;
     }
+    let token = change.token.clone();
     let request = if commit {
         Request::CommitNetworkChange {
             token: change.token.clone(),
@@ -2192,6 +2190,9 @@ async fn finish_pending(app: &mut TuiApp, client: &ApiClient, commit: bool) {
     match client.request(&request).await {
         Ok(Response::NetworkChangeCommitted { .. }) if commit => {
             app.push_message(LogLevel::Info, "Network changes applied and saved");
+            app.dashboard
+                .pending_network_changes
+                .retain(|pending| pending.token != token);
             app.confirmation.pending = None;
             app.interface_ui.preview = None;
             app.interface_ui.editor = None;
@@ -2199,6 +2200,9 @@ async fn finish_pending(app: &mut TuiApp, client: &ApiClient, commit: bool) {
         }
         Ok(Response::NetworkChangeRolledBack { .. }) if !commit => {
             app.push_message(LogLevel::Info, "Network change rolled back");
+            app.dashboard
+                .pending_network_changes
+                .retain(|pending| pending.token != token);
             app.confirmation.pending = None;
             app.interface_ui.preview = None;
             app.interface_ui.editor = None;

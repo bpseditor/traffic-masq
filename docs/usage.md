@@ -417,7 +417,7 @@ On Dashboard, press **p** to open pending transactions. Select a row with the
 arrows and Enter, or click it, to open its actions. If interface rollback failed,
 **Retry rollback** is selected instead of the unavailable confirmation action.
 Tab selects **Back (transaction stays pending)**; Enter activates the selected
-action. Esc or **r** retries rollback, and **b** returns to the list. A failed
+action. **r** retries rollback; Esc or **b** returns to the list. A failed
 retry keeps the transaction and displays its error; returning to the list does
 not cancel or discard recovery. If the commit outcome is unknown, only Back is
 available until durable recovery is resolved.
@@ -647,7 +647,7 @@ after the result. A timeout does not prove that a change failed: inspect the
 current state before retrying. An expired session offers login again without
 discarding drafts or extending rollback deadlines. Terminals smaller than 80×24
 disable normal editing and mouse controls; Q still exits. An active confirmation
-deadline remains visible, with Enter to commit and Esc to roll back. Recovery
+deadline remains visible, with Enter to commit and Esc to return. Recovery
 states show their available recovery actions instead.
 
 ### Wi-Fi client connections

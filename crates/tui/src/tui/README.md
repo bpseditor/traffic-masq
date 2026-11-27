@@ -111,9 +111,9 @@ Because misconfiguring an IP address or firewall rule can sever SSH access, inte
    - The TUI transitions to a Pending screen displaying a live countdown timer:
      $$\text{Remaining} = \text{expires\_at\_unix} - \text{current\_unix\_time}()$$
    - Pressing **Enter** sends a commit request, making the change permanent.
-   - Pressing **Esc** sends a rollback request; completion must be verified.
+   - Pressing **Esc** returns from Pending while the daemon confirmation timer continues. Select **Roll back now** and press Enter to request rollback; completion must be verified.
    - If the connection drops or the operator does not respond, expiry schedules daemon rollback. Admitted operations, retry cycles and commit uncertainty can delay or fence recovery; inspect pending state. See the [timing contract](../../../../docs/architecture.md#commit-uncertainty-and-confirmation-timing).
-   - Interface recovery keeps visible **Retry rollback** and **Back (transaction stays pending)** buttons. Retry is selected initially; Tab/arrows move between available actions and Enter activates the selection. Esc/r retries rollback; b returns without clearing recovery. Commit-indeterminate state offers only Back. Failed requests retain the token and show the returned error.
+   - Interface recovery keeps visible **Retry rollback** and **Back (transaction stays pending)** buttons. Retry is selected initially; Tab/arrows move between available actions and Enter activates the selection. r retries rollback; Esc/b returns without clearing recovery. Commit-indeterminate state offers only Back. Failed requests retain the token and show the returned error.
    - If rollback itself fails, the router pending screen switches to recovery mode: commit is removed, the `TM-REC-207` notice and individual failures are shown, **Enter** retries rollback, and **Esc** returns to the Route screen without discarding recovery state.
    - On the Route screen, degraded recovery shows the recovery code, invariant, blocked operation, action and runbook. Press **r** to retry a failed rollback; for `TM-REC-208` journal-cleanup-pending, cleanup retries automatically and **r** refreshes status.
 3. **Disconnect Handling:** If the daemon becomes unreachable while on a pending screen, the TUI retains the pending change state and warns the operator that the outcome is unverified rather than falsely claiming success.
@@ -359,7 +359,7 @@ async fn resize_clears_hit_regions() {
 ### UX safeguards
 
 - Ctrl+K opens modal context help, including a first-setup checklist. Ctrl+G remains the operation-message viewer.
-- Below 80x24, an active confirmation deadline is shown with Enter to commit and Esc to roll back. Other editing remains disabled.
+- Below 80x24, an active confirmation deadline is shown with Enter to commit and Esc to return. Other editing remains disabled.
 - AP editor consequences stay pinned below the scrolling fields. A `*` marks edited settings; Esc offers keeping a session draft, discarding it,
   or continuing editing. Interface and AP drafts retain their original revision
   and stay memory-only. AP draft credentials still zeroize on drop.

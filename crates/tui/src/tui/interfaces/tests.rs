@@ -1606,3 +1606,45 @@ async fn dhcp_checkbox_has_visible_mouse_target_and_keyboard_toggle() {
             .dhcp_client_enabled
     );
 }
+
+#[tokio::test]
+async fn escape_leaves_pending_without_changing_transaction() {
+    use traffic_masq_protocol::{NetworkChangePhase, PendingNetworkChange};
+
+    for phase in [
+        NetworkChangePhase::AwaitingCommit,
+        NetworkChangePhase::RecoveryRequired,
+        NetworkChangePhase::CommitIndeterminate,
+    ] {
+        for input_enabled in [true, false] {
+            let mut app = TuiApp {
+                screen: Screen::PendingChange,
+                ..Default::default()
+            };
+            app.ui.input_enabled = input_enabled;
+            app.confirmation.pending_return_screen = Screen::PendingTransactions;
+            app.confirmation.pending = Some(PendingNetworkChange {
+                token: "retained-token".into(),
+                interface: "eth0".into(),
+                phase,
+                last_error: None,
+                recovery_progress: None,
+                expires_at_unix: 12345,
+                rollback_timeout_seconds: 60,
+            });
+            super::super::handle_key(
+                &mut app,
+                KeyCode::Esc,
+                &ApiClient::new("/nonexistent.sock"),
+                false,
+            )
+            .await;
+            assert_eq!(app.screen, Screen::PendingTransactions);
+            let pending = app.confirmation.pending.as_ref().unwrap();
+            assert_eq!(pending.token, "retained-token");
+            assert_eq!(pending.phase, phase);
+            assert_eq!(pending.expires_at_unix, 12345);
+            assert!(pending.last_error.is_none());
+        }
+    }
+}

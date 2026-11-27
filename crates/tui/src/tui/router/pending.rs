@@ -346,21 +346,7 @@ pub(crate) async fn handle_router_pending_key(app: &mut TuiApp, key: KeyCode, cl
             .await;
         }
         KeyCode::Esc => {
-            let recovery_required = app
-                .router_ui
-                .router_pending
-                .as_ref()
-                .is_some_and(|view| view.recovery_required());
-            if recovery_required {
-                if app.router_ui.router_pending_return_screen == Screen::PendingTransactions {
-                    return_after_transaction(app, client).await;
-                } else {
-                    app.screen = Screen::Router;
-                    load_router_data(app, client).await;
-                }
-            } else {
-                finish_router_pending(app, client, false).await;
-            }
+            app.screen = app.router_ui.router_pending_return_screen;
         }
         _ => {}
     }

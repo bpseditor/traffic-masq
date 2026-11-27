@@ -1585,7 +1585,7 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut TuiApp, direct: bool) {
     app.ui = UiLayout::default();
     if area.width < MIN_TERMINAL_WIDTH || area.height < MIN_TERMINAL_HEIGHT {
         let recovery_hint = app.confirmation.pending.as_ref().filter(|change| !change.can_commit()).map(|change| {
-            if change.can_rollback() { "Rollback recovery required. Enter/Esc: retry rollback. Q: exit." }
+            if change.can_rollback() { "Rollback recovery required. Enter: retry rollback. Esc: back. Q: exit." }
             else { "Commit outcome unknown. Repair storage and restart the daemon. Esc: back. Q: exit." }
         }).or_else(|| app.router_ui.router_pending.as_ref().filter(|view| view.recovery_required()).map(|view| {
             if view.commit_indeterminate() { "Commit outcome unknown. Repair storage and restart the daemon. Esc: back. Q: exit." }
@@ -1601,7 +1601,7 @@ fn render(frame: &mut ratatui::Frame<'_>, app: &mut TuiApp, direct: bool) {
         if let Some(deadline) = pending_deadline(app) {
             frame.render_widget(
                 Paragraph::new(format!(
-                    "Rollback in {}s\nEnter: commit\nEsc: rollback\nQ: exit (timer continues)",
+                    "Rollback in {}s\nEnter: commit\nEsc: back\nQ: exit (timer continues)",
                     deadline.saturating_sub(current_unix_time())
                 ))
                 .wrap(ratatui::widgets::Wrap { trim: false })

@@ -303,8 +303,8 @@ pub(crate) fn help_pairs(app: &TuiApp) -> Vec<(&'static str, &'static str)> {
                 return vec![
                     ("Tab", "action"),
                     ("Enter", "activate"),
-                    ("r/Esc", "retry rollback"),
-                    ("b", "back"),
+                    ("r", "retry rollback"),
+                    ("Esc/b", "back"),
                 ];
             }
         }
@@ -512,12 +512,12 @@ pub(crate) fn screen_help_pairs(screen: Screen) -> Vec<(&'static str, &'static s
             ("Enter", "next/activate"),
             ("Esc", "cancel"),
         ],
-        Screen::PendingChange => vec![("Enter", "activate"), ("Esc", "roll back")],
+        Screen::PendingChange => vec![("Enter", "activate"), ("Esc", "back")],
         Screen::RouterPending => vec![
             ("↑/↓", "details"),
             ("PgUp/Dn", "page"),
             ("Enter", "activate"),
-            ("Esc", "roll back"),
+            ("Esc", "back"),
         ],
         Screen::DaemonLogs => vec![
             ("/", "search"),
