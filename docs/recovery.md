@@ -155,6 +155,7 @@ Recovery conditions have stable `TM-REC-xxx` identifiers. Most are fatal startup
 
 | Code | Invariant | Domain |
 | --- | --- | --- |
+| [`TM-REC-102`](#tm-rec-102) | `virtual_ap_ownership_conflict` | Virtual AP ownership conflict |
 | [`TM-REC-101`](#tm-rec-101) | `accessible_interface_recovery_store` | Interface recovery store |
 | [`TM-REC-201`](#tm-rec-201) | `provable_router_recovery` | Router recovery umbrella |
 | [`TM-REC-202`](#tm-rec-202) | `accessible_router_recovery_journal` | Router journal access |
@@ -700,3 +701,50 @@ pending transactions before downgrading, then restore a coherent backup supporte
 by the older daemon. Older readers cannot safely ignore standalone VPN intent or
 its recovery snapshots. Never edit schema numbers or delete a journal to make a
 downgrade start.
+
+Virtual AP ownership records in `wifi-concurrent/*.json` accept legacy
+`parent`/`mac` records and records with an optional `created` receipt. The receipt
+contains the kernel NEW_INTERFACE response's wireless-device ID, PHY and actual
+MAC, bound to `/proc/sys/kernel/random/boot_id`. It permits removal of that exact
+object when a driver ignored the requested random MAC. It does not authorize
+normal use with a mismatching MAC. Older readers reject receipt-bearing records;
+complete AP cleanup with a compatible daemon before downgrading. Legacy conflicts
+are never adopted from their current name or MAC. A crash or failed receipt write
+between creation and durable receipt publication can still require operator
+repair; preserve all evidence in that case.
+
+### TM-REC-102
+
+Invariant `virtual_ap_ownership_conflict`. The AP identity does not match its
+private ownership record, or the driver ignored the requested creation MAC.
+This blocks the affected recovery scope, not the control plane. It does not prove
+that another network manager created the interface.
+
+1. Preserve interface journals and `wifi-concurrent` records. Do not edit MACs,
+   fabricate creation receipts, or delete journals to clear Pending.
+2. Inspect `ip -details address show dev <AP>` and `iw dev <AP> info`, saved
+   ownership evidence and creation logs. Check NetworkManager and Wi-Fi/service
+   consumers. A matching name alone is insufficient proof. Use a management
+   connection independent of this interface.
+3. If the operator can establish that this is an obsolete, unused virtual AP,
+   explicitly remove that AP with `sudo iw dev <AP> del`. Substitute the verified
+   AP name, never its physical parent. Do not stop network managers globally.
+   If ownership remains unclear or the AP is in use, preserve it and investigate.
+4. Inspect Pending and explicitly retry Rollback. Verify completion before a new
+   Apply. If deletion or restoration fails, retain evidence and inspect the new
+   diagnostic; absence of an error message is not proof of restoration.
+
+Older records lack the creation receipt needed for automatic cleanup of a
+MAC mismatch. Updated binaries deliberately do not reconstruct that proof from
+the current same-name object. New creation receipts permit verified cleanup;
+they do not make an incompatible driver preserve a requested MAC.
+
+For `brcmfmac`, virtual AP setup now detects the parent driver through sysfs and
+sets the requested MAC after creation while the new interface is DOWN. It first
+persists the kernel creation receipt. If correction fails, the original receipt
+still permits cleanup of the original object; if correction succeeds, the
+previously persisted requested MAC identifies the corrected object. A crash
+before receipt publication can still require manual repair. This does not adopt
+old conflicting APs without creation evidence. Manual testing verified MAC
+assignment while DOWN; AP startup and traffic with this correction remain a
+separate hardware validation step.

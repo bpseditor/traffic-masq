@@ -109,3 +109,14 @@ that interface's journal while leaving the daemon and unaffected interfaces
 running. Router rollback failures and foreign-route conflicts similarly keep the
 control plane available so the pending transaction can be inspected and an
 explicit rollback retried without deleting recovery evidence.
+
+Virtual AP ownership records in `wifi-concurrent/*.json` accept legacy
+`parent`/`mac` records and records with an optional `created` receipt. The receipt
+contains the kernel NEW_INTERFACE response's wireless-device ID, PHY and actual
+MAC, bound to `/proc/sys/kernel/random/boot_id`. It permits removal of that exact
+object when a driver ignored the requested random MAC. It does not authorize
+normal use with a mismatching MAC. Older readers reject receipt-bearing records;
+complete AP cleanup with a compatible daemon before downgrading. Legacy conflicts
+are never adopted from their current name or MAC. A crash or failed receipt write
+between creation and durable receipt publication can still require operator
+repair; preserve all evidence in that case.

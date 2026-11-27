@@ -340,6 +340,7 @@ async fn startup_rollback_dropping_without_unwind_runs_nothing() {
 
 #[derive(Debug, Default)]
 struct FakeDhcpReconciler {
+    fail_disable: std::collections::HashSet<String>,
     specs: Mutex<HashMap<String, DhcpServiceSpec>>,
     stale_bindings: Mutex<HashMap<String, bool>>,
     configure_calls: Mutex<Vec<DhcpServiceSpec>>,
@@ -355,6 +356,12 @@ impl DhcpRuntimeReconciler for FakeDhcpReconciler {
 
     async fn disable(&self, interface: &str) -> Result<Option<DhcpServiceSpec>> {
         self.disable_calls.lock().await.push(interface.to_string());
+        if self.fail_disable.contains(interface) {
+            return Err(crate::core::recovery_control::failure(
+                crate::core::recovery_control::FailureKind::Conflict,
+                "injected AP cleanup ownership conflict",
+            ));
+        }
         Ok(self.specs.lock().await.remove(interface))
     }
 

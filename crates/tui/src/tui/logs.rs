@@ -100,7 +100,9 @@ pub(crate) fn with_troubleshooting_hint(level: LogLevel, message: String) -> Str
     if lower.contains("enable configure with traffic-masq") {
         return message;
     }
-    let hint = if lower.contains("convergence is deferred") {
+    let hint = if lower.contains("tm-rec-102") {
+        Some("TM-REC-102: preserve journals; verify the obsolete virtual AP and its consumers before manual removal, then retry Rollback; see docs/recovery.md#tm-rec-102")
+    } else if lower.contains("convergence is deferred") {
         Some("verify that the configured interface still exists; if it was renamed or removed, update or remove its traffic-masq interface configuration")
     } else if lower.contains("unmanaged") || lower.contains("managed mode") {
         Some(

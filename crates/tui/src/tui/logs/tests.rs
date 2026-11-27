@@ -152,3 +152,14 @@ fn warnings_wrap_at_word_boundaries_and_keep_graphemes() {
         .iter()
         .all(|row| unicode_width::UnicodeWidthStr::width(row.as_str()) <= 12));
 }
+
+#[test]
+fn virtual_ap_recovery_code_precedes_generic_ownership_hint() {
+    let message = with_troubleshooting_hint(
+        LogLevel::Error,
+        "recovery_code=TM-REC-102; virtual AP ownership conflict".into(),
+    );
+    assert!(message.contains("docs/recovery.md#tm-rec-102"));
+    assert!(message.contains("retry Rollback"));
+    assert!(!message.contains("stop the conflicting manager"));
+}

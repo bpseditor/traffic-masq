@@ -8,6 +8,7 @@ pub mod client;
 pub(crate) mod concurrent;
 pub mod ctrl;
 mod ctrl_transport;
+mod driver;
 pub(crate) mod lifecycle;
 pub mod policy;
 pub mod process;

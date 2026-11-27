@@ -444,3 +444,85 @@ async fn lan_rollback_restores_runtime_and_storage_then_allows_a_confirmed_edit(
         );
     }
 }
+
+#[tokio::test]
+async fn ap_cleanup_conflict_does_not_block_independent_apply_and_commit() {
+    let mut fixture = Fixture::start_with_converger(0, Duration::ZERO, 60, false).await;
+    let root = fixture.desired.state_dir().to_path_buf();
+    let parent = "absent-wifi0";
+    let ap = crate::wifi::concurrent::ap_name(parent);
+    assert!(!std::path::Path::new("/sys/class/net").join(&ap).exists());
+    let path = root.join("wifi-concurrent").join(format!("{ap}.json"));
+    crate::atomic_file::ensure_private_dir(path.parent().unwrap(), 0o700).unwrap();
+    let bytes =
+        serde_json::to_vec(&serde_json::json!({"parent":parent,"mac":[2,1,2,3,4,5]})).unwrap();
+    crate::atomic_file::replace_async(&path, &bytes, 0o600)
+        .await
+        .unwrap();
+    let desired = fixture.desired.clone();
+    let network = fixture.network.clone();
+    let ownership = fixture.ownership.clone();
+    let gate = fixture.gate.clone();
+    desired.attach_converger();
+    fixture.worker = Some(tokio::spawn(async move {
+        let dhcp = FakeDhcpReconciler {
+            fail_disable: [ap.clone()].into_iter().collect(),
+            ..Default::default()
+        };
+        loop {
+            desired.changed().await;
+            let version = desired.version();
+            let _runtime = gate.converge().await;
+            let result = reconcile_network_runtime_once(
+                &desired,
+                &ownership,
+                network.clone(),
+                &dhcp,
+                None::<&FakeWifiReconciler>,
+                None::<&FakeWifiReconciler>,
+                Some(&FakeDhcpClientReconciler::default()),
+            )
+            .await;
+            let failures = result.as_ref().expect("AP cleanup is a scoped failure");
+            assert!(failures.contains_key(parent) && failures.contains_key(&ap));
+            assert!(!failures.contains_key("eth0"));
+            desired.report_result(version, result);
+        }
+    }));
+    let response = tokio::time::timeout(WATCHDOG, request(&fixture.service, edit_lan(NEW_LAN)))
+        .await
+        .unwrap();
+    let Response::NetworkChangePending { change } = response else {
+        panic!("{response:?}")
+    };
+    let response = request(
+        &fixture.service,
+        Request::CommitNetworkChange {
+            token: change.token,
+        },
+    )
+    .await;
+    assert!(
+        matches!(response, Response::NetworkChangeCommitted { .. }),
+        "{response:?}"
+    );
+    expect_lan(&fixture.service, NEW_LAN).await;
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    let reopened = RuntimeOverrideManager::load(&root, &AppConfig::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.committed_revision().await,
+        fixture.overrides.committed_revision().await
+    );
+    assert!(reopened.committed_revision().await > 0);
+    assert_eq!(
+        reopened
+            .effective_interface("eth0")
+            .await
+            .unwrap()
+            .unwrap()
+            .ipv4,
+        Some(NEW_LAN.parse().unwrap())
+    );
+}

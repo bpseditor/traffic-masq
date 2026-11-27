@@ -142,6 +142,10 @@ reservations until the worker finishes, so compensation cannot race a late
 write. The handoff does not reset an existing recovery budget or erase a stopped
 recovery decision.
 
+Wi-Fi driver-specific AP setup is selected in `wifi::driver` from the parent's
+sysfs driver binding. `wifi::concurrent` retains creation evidence and rollback
+ownership independently of that profile.
+
 Wi-Fi supervisors share an encapsulated `wifi::retry` policy. Only that module
 updates attempt counters, backoff and interface-bound suspension. AP diagnostic
 classification lives in `wifi::supervisor::health`; temporary STA scans and

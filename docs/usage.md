@@ -55,6 +55,11 @@ channels are usable. Regulatory dumps require a kernel supporting
 
 WireGuard is configured over netlink, and both DHCP server and DHCP client are
 part of the daemon, so `wireguard-tools`, `dhcpcd` and `dhclient` are not used.
+Concurrent AP creation automatically selects the Wi-Fi driver profile through
+sysfs. For `brcmfmac`, the daemon corrects the new AP MAC while it is DOWN,
+after recording its creation identity. Other identified drivers use the standard
+creation path. No board-name heuristic or manual profile setting is required.
+
 The DHCP client requires root or `CAP_NET_RAW`.
 
 ## Build

@@ -61,3 +61,26 @@ capture tagged policy rules/routes and restore interface names after index chang
 The dataplane tests cover ownership, cancellation, drift and restoration;
 `router_dataplane_namespace` exercises a foreign full-tunnel rule and verifies
 outbound/return traffic, reopened snapshots and preservation of foreign state.
+
+## Virtual AP creation receipts and scoped cleanup
+
+`wifi::concurrent` retains the acknowledged kernel creation identity before
+reporting a driver MAC mismatch. Removal verifies the receipt against the current
+boot, wireless-device ID, PHY and MAC and targets that wireless-device ID. It
+never reconstructs missing proof from an existing same-name device. Legacy random
+MAC ownership remains supported; conflicting legacy records remain fenced.
+`app::reconcile` reports withdrawn-AP cleanup failures against the parent/AP
+scope, allowing unrelated interface transactions to converge and commit.
+No transaction phase, confirmation or journal-retirement rule changes.
+
+### Wi-Fi driver profiles
+
+`wifi::driver` selects AP setup behavior from the parent's sysfs `device/driver`
+link. Exact `brcmfmac` selects post-creation MAC correction; other identified
+drivers retain the standard path. Failed driver observation blocks creation.
+The profile selection is centralized so additional driver behavior can be added
+without scattering device-name or board-model checks through convergence.
+`wifi::concurrent` retains ownership, durable receipts and cleanup; profiles
+cannot adopt existing interfaces or bypass those checks. The correction uses
+the existing network provider while the new AP is DOWN, after durable creation
+proof and identity revalidation, then checks the resulting MAC and wdev.

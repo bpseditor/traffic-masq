@@ -479,6 +479,17 @@ pub(super) async fn reconcile_network_runtime_once<
         };
         let _parent_lane = desired.runtime_locks.lock(&parent).await;
         let _ap_lane = desired.runtime_locks.lock(&ap).await;
+        if desired
+            .recovery()
+            .check_scope(desired.state_dir(), Some(&parent))
+            .is_err()
+            || desired
+                .recovery()
+                .check_scope(desired.state_dir(), Some(&ap))
+                .is_err()
+        {
+            continue;
+        }
         let latest = desired.effective().await?;
         if latest
             .network
@@ -500,17 +511,27 @@ pub(super) async fn reconcile_network_runtime_once<
             wifi: None,
             wifi_client: None,
         };
-        dhcp.disable(&ap).await?;
-        if let Some(client) = dhcp_client {
-            client.disable(&ap).await?;
+        let cleanup: Result<()> = async {
+            dhcp.disable(&ap).await?;
+            if let Some(client) = dhcp_client {
+                client.disable(&ap).await?;
+            }
+            if let Some(client) = wifi_client {
+                client.reconcile_interface(&ap, &disabled).await?;
+            }
+            if let Some(ap_runtime) = wifi {
+                ap_runtime.reconcile_interface(&ap, &disabled).await?;
+            }
+            crate::wifi::concurrent::remove_ap(desired.state_dir(), &parent).await?;
+            Ok(())
         }
-        if let Some(client) = wifi_client {
-            client.reconcile_interface(&ap, &disabled).await?;
+        .await;
+        if let Err(error) = cleanup {
+            desired.record_failure_kind(pass_version, &parent, &error);
+            desired.record_failure_kind(pass_version, &ap, &error);
+            failures.insert(parent, format!("{error:#}"));
+            failures.insert(ap, format!("{error:#}"));
         }
-        if let Some(ap_runtime) = wifi {
-            ap_runtime.reconcile_interface(&ap, &disabled).await?;
-        }
-        crate::wifi::concurrent::remove_ap(desired.state_dir(), &parent).await?;
     }
     let observed_interfaces: HashMap<_, _> = network
         .list_interfaces()
@@ -527,6 +548,10 @@ pub(super) async fn reconcile_network_runtime_once<
     let mut observation_version = pass_version;
     let mut changes = desired.intent_changes();
     let mut running = std::collections::HashSet::new();
+    // Failed dependency cleanup must not be retried inside the same pass or
+    // overwritten by a successful no-op on the derived AP. Independent scopes
+    // still converge and receive their own results.
+    let cleanup_failed: std::collections::HashSet<_> = failures.keys().cloned().collect();
     let mut completed = HashMap::new();
     let mut jobs = FuturesUnordered::new();
     let mut global_error = None;
@@ -691,10 +716,12 @@ async fn reconcile_interface_runtime_once(
             if let Some(parent) = crate::wifi::concurrent::parent_for(&effective.network, name) {
                 // A derived managed output is intent, not permission to adopt
                 // an unrelated link occupying its name. Verify before any writer.
-                crate::wifi::concurrent::ensure_ap(desired.state_dir(), parent).await?;
+                crate::wifi::concurrent::ensure_ap(desired.state_dir(), parent, network.as_ref())
+                    .await?;
             }
             if config.wifi_concurrent {
-                crate::wifi::concurrent::ensure_ap(desired.state_dir(), name).await?;
+                crate::wifi::concurrent::ensure_ap(desired.state_dir(), name, network.as_ref())
+                    .await?;
             } else if crate::wifi::concurrent::has_record(desired.state_dir(), name).await? {
                 let ap = crate::wifi::concurrent::ap_name(name);
                 let _ap_lane = desired.runtime_locks.lock(&ap).await;

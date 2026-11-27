@@ -405,3 +405,10 @@ cargo test --locked -p traffic-masq --lib lan_rollback_restores_runtime_and_stor
 
 These commands exercise the examples' source tests. Select additional checks
 from the acceptance matrix for the actual changed path.
+
+Virtual AP cleanup failures are reported for their parent/AP scope rather than
+aborting convergence of unrelated interfaces. A creation receipt can establish
+ownership of a driver-assigned MAC only for the exact acknowledged wireless
+object in the same kernel boot. Missing/uncertain receipt publication retains
+recovery evidence and cannot authorize adoption. See the [recovery runbook](recovery.md)
+for supported ownership-record readers and downgrade constraints.

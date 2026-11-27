@@ -13,6 +13,7 @@ use sha2::{Digest, Sha256};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveryCode {
     AccessibleInterfaceRecoveryStore,
+    VirtualApOwnershipConflict,
     ProvableRouterRecovery,
     AccessibleRouterRecoveryJournal,
     DecodableRecoverySnapshot,
@@ -30,6 +31,7 @@ pub enum RecoveryCode {
 impl RecoveryCode {
     pub const ALL: &'static [Self] = &[
         Self::AccessibleInterfaceRecoveryStore,
+        Self::VirtualApOwnershipConflict,
         Self::ProvableRouterRecovery,
         Self::AccessibleRouterRecoveryJournal,
         Self::DecodableRecoverySnapshot,
@@ -47,6 +49,7 @@ impl RecoveryCode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AccessibleInterfaceRecoveryStore => "TM-REC-101",
+            Self::VirtualApOwnershipConflict => "TM-REC-102",
             Self::ProvableRouterRecovery => "TM-REC-201",
             Self::AccessibleRouterRecoveryJournal => "TM-REC-202",
             Self::DecodableRecoverySnapshot => "TM-REC-203",
@@ -65,6 +68,7 @@ impl RecoveryCode {
     pub fn from_code(value: &str) -> Option<Self> {
         Some(match value {
             "TM-REC-101" => Self::AccessibleInterfaceRecoveryStore,
+            "TM-REC-102" => Self::VirtualApOwnershipConflict,
             "TM-REC-201" => Self::ProvableRouterRecovery,
             "TM-REC-202" => Self::AccessibleRouterRecoveryJournal,
             "TM-REC-203" => Self::DecodableRecoverySnapshot,
@@ -84,6 +88,7 @@ impl RecoveryCode {
     pub const fn invariant(self) -> &'static str {
         match self {
             Self::AccessibleInterfaceRecoveryStore => "accessible_interface_recovery_store",
+            Self::VirtualApOwnershipConflict => "virtual_ap_ownership_conflict",
             Self::ProvableRouterRecovery => "provable_router_recovery",
             Self::AccessibleRouterRecoveryJournal => "accessible_router_recovery_journal",
             Self::DecodableRecoverySnapshot => "decodable_recovery_snapshot",
@@ -102,7 +107,8 @@ impl RecoveryCode {
     pub const fn is_startup_blocking(self) -> bool {
         !matches!(
             self,
-            Self::RouterRollbackFailed
+            Self::VirtualApOwnershipConflict
+                | Self::RouterRollbackFailed
                 | Self::RouterJournalCleanupPending
                 | Self::CommitIndeterminate
         )
@@ -111,6 +117,7 @@ impl RecoveryCode {
     pub const fn runbook_ref(self) -> &'static str {
         match self {
             Self::AccessibleInterfaceRecoveryStore => "docs/recovery.md#tm-rec-101",
+            Self::VirtualApOwnershipConflict => "docs/recovery.md#tm-rec-102",
             Self::ProvableRouterRecovery => "docs/recovery.md#tm-rec-201",
             Self::AccessibleRouterRecoveryJournal => "docs/recovery.md#tm-rec-202",
             Self::DecodableRecoverySnapshot => "docs/recovery.md#tm-rec-203",
@@ -222,6 +229,19 @@ pub struct RecoveryDiagnostic {
 }
 
 impl RecoveryDiagnostic {
+    pub fn virtual_ap_ownership_conflict() -> Self {
+        Self {
+            recovery_code: RecoveryCode::VirtualApOwnershipConflict,
+            object: Some("virtual_ap"),
+            journal: None,
+            path: None,
+            operation: "verify_virtual_ap_ownership",
+            metadata_safe_to_remove: false,
+            details: Vec::new(),
+            operator_action: RecoveryAction::InspectRecoveryState,
+        }
+    }
+
     pub fn fatal(
         recovery_code: StartupRecoveryCode,
         operation: &'static str,
@@ -375,6 +395,7 @@ impl RecoveryState {
     pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
         self.inner.events.subscribe()
     }
+
 }
 
 fn receipt(path: &Path) -> PathBuf {
@@ -978,6 +999,7 @@ mod tests {
             assignments,
             vec![
                 ("TM-REC-101", "accessible_interface_recovery_store"),
+                ("TM-REC-102", "virtual_ap_ownership_conflict"),
                 ("TM-REC-201", "provable_router_recovery"),
                 ("TM-REC-202", "accessible_router_recovery_journal"),
                 ("TM-REC-203", "decodable_recovery_snapshot"),
@@ -1031,17 +1053,18 @@ mod tests {
             );
         }
 
-        assert_eq!(codes.len(), 13);
-        assert_eq!(invariants.len(), 13);
+        assert_eq!(codes.len(), 14);
+        assert_eq!(invariants.len(), 14);
         assert_eq!(RecoveryCode::from_code("TM-REC-999"), None);
     }
 
     #[test]
-    fn only_degraded_router_codes_are_non_blocking() {
+    fn runtime_recovery_codes_are_non_blocking() {
         for code in RecoveryCode::ALL {
             let expected = !matches!(
                 code,
-                RecoveryCode::RouterRollbackFailed
+                RecoveryCode::VirtualApOwnershipConflict
+                    | RecoveryCode::RouterRollbackFailed
                     | RecoveryCode::RouterJournalCleanupPending
                     | RecoveryCode::CommitIndeterminate
             );

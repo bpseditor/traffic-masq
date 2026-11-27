@@ -115,6 +115,113 @@ pub(crate) async fn validate(parent: &str) -> Result<u32> {
 struct OwnedAp {
     parent: String,
     mac: [u8; 6],
+    // Only an acknowledged NEW_INTERFACE reply can establish this fallback.
+    // Older readers reject the additional field rather than losing its proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    created: Option<CreatedAp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreatedAp {
+    boot_id: String,
+    wdev: u64,
+    phy: u32,
+    mac: [u8; 6],
+}
+
+fn conflict(message: impl Into<String>) -> anyhow::Error {
+    let diagnostic = crate::core::recovery::RecoveryDiagnostic::virtual_ap_ownership_conflict()
+        .detail("operator_steps", "Preserve journals; inspect AP identity and consumers; manually remove only a verified obsolete virtual AP; retry Rollback. See TM-REC-102; never delete recovery journals.");
+    crate::core::recovery_control::failure(
+        crate::core::recovery_control::FailureKind::Conflict,
+        message,
+    )
+    .context(diagnostic)
+}
+
+impl CreatedAp {
+    fn from_reply(boot_id: &str, name: &str, attrs: &[Nl80211Attr]) -> Result<Self> {
+        let mut wdev = None;
+        let mut phy = None;
+        let mut mac = None;
+        ensure!(
+            attrs
+                .iter()
+                .any(|a| matches!(a, Nl80211Attr::IfName(n) if n == name)),
+            "virtual AP creation reply has a different name"
+        );
+        for attr in attrs {
+            match attr {
+                Nl80211Attr::Wdev(value) => wdev = Some(*value),
+                Nl80211Attr::Wiphy(value) => phy = Some(*value),
+                Nl80211Attr::Mac(value) => mac = Some(*value),
+                _ => {}
+            }
+        }
+        Ok(Self {
+            boot_id: boot_id.into(),
+            wdev: wdev.context("virtual AP reply missing wdev")?,
+            phy: phy.context("virtual AP reply missing PHY")?,
+            mac: mac.context("virtual AP reply missing MAC")?,
+        })
+    }
+}
+
+async fn record_creation(root: &Path, record: &mut OwnedAp, created: CreatedAp) -> Result<()> {
+    persist_creation(root, record, created).await?;
+    check_creation_mac(record)
+}
+
+async fn persist_creation(root: &Path, record: &mut OwnedAp, created: CreatedAp) -> Result<()> {
+    record.created = Some(created);
+    traffic_masq_atomic_file::replace_async(
+        &record_path(root, &record.parent),
+        &serde_json::to_vec(record)?,
+        0o600,
+    )
+    .await?;
+    Ok(())
+}
+
+fn check_creation_mac(record: &OwnedAp) -> Result<()> {
+    let actual = record
+        .created
+        .as_ref()
+        .context("missing creation receipt")?
+        .mac;
+    if actual != record.mac {
+        return Err(conflict(format!(
+            "{}: driver did not preserve virtual AP identity; expected MAC {}, observed MAC {}; creation receipt retained for rollback",
+            ap_name(&record.parent), traffic_masq_protocol::MacAddr::new(record.mac), traffic_masq_protocol::MacAddr::new(actual),
+        )));
+    }
+    Ok(())
+}
+
+async fn boot_id() -> Result<String> {
+    Ok(tokio::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+        .await?
+        .trim()
+        .to_owned())
+}
+
+async fn observed_creation(name: &str) -> Result<CreatedAp> {
+    let boot = boot_id().await?;
+    let messages = dump(Nl80211Command::GetInterface, vec![]).await?;
+    let attrs = messages
+        .iter()
+        .find(|attrs| {
+            attrs
+                .iter()
+                .any(|a| matches!(a, Nl80211Attr::IfName(n) if n == name))
+        })
+        .context("virtual AP disappeared during ownership observation")?;
+    CreatedAp::from_reply(&boot, name, attrs)
+}
+
+fn matches_creation(record: &OwnedAp, observed: &CreatedAp) -> bool {
+    record.created.as_ref() == Some(observed)
 }
 
 fn record_path(root: &Path, parent: &str) -> PathBuf {
@@ -159,7 +266,8 @@ impl Drop for Connection {
     }
 }
 
-async fn create(index: u32, name: &str, mac: [u8; 6]) -> Result<()> {
+async fn create(index: u32, name: &str, mac: [u8; 6]) -> Result<CreatedAp> {
+    let boot = boot_id().await?;
     tokio::time::timeout(Duration::from_secs(10), async {
         let (connection, handle, _) = wl_nl80211::new_connection()?;
         let _connection = Connection(tokio::spawn(connection));
@@ -173,21 +281,33 @@ async fn create(index: u32, name: &str, mac: [u8; 6]) -> Result<()> {
             ])
             .execute()
             .await;
-        while replies.try_next().await?.is_some() {}
-        Ok::<_, anyhow::Error>(())
+        let mut created = None;
+        while let Some(reply) = replies.try_next().await? {
+            created = Some(CreatedAp::from_reply(
+                &boot,
+                name,
+                &reply.payload.attributes,
+            )?);
+        }
+        let created = created.context("missing virtual AP creation reply")?;
+        ensure!(created.phy == index, "virtual AP created on unexpected PHY");
+        Ok::<_, anyhow::Error>(created)
     })
     .await
-    .context("creating virtual AP timed out")??;
-    Ok(())
+    .context("creating virtual AP timed out")?
 }
 
 /// Called under the parent's radio/runtime reservations. The durable random MAC
 /// proves ownership after a crash; a pre-existing foreign interface is refused.
-pub(crate) async fn ensure_ap(root: &Path, parent: &str) -> Result<()> {
+pub(crate) async fn ensure_ap(
+    root: &Path,
+    parent: &str,
+    network: &dyn crate::netlink::NetworkProvider,
+) -> Result<()> {
     let index = validate(parent).await?;
     let name = ap_name(parent);
     let existing = observed_mac(&name).await?;
-    let record = match load(root, parent).await? {
+    let mut record = match load(root, parent).await? {
         Some(record) => record,
         None => {
             ensure!(
@@ -199,6 +319,7 @@ pub(crate) async fn ensure_ap(root: &Path, parent: &str) -> Result<()> {
             let record = OwnedAp {
                 parent: parent.into(),
                 mac,
+                created: None,
             };
             let path = record_path(root, parent);
             traffic_masq_atomic_file::ensure_private_dir(path.parent().unwrap(), 0o700)?;
@@ -208,16 +329,44 @@ pub(crate) async fn ensure_ap(root: &Path, parent: &str) -> Result<()> {
         }
     };
     if let Some(mac) = existing {
-        ensure!(
-            mac == record.mac && phy_index(&name).await? == index,
-            "{name} is not the owned virtual AP; refusing to modify it"
-        );
+        if mac != record.mac || phy_index(&name).await? != index {
+            return Err(conflict(format!(
+                "{name}: virtual AP ownership conflict; expected MAC {}, observed MAC {}; refusing to modify it", traffic_masq_protocol::MacAddr::new(record.mac), traffic_masq_protocol::MacAddr::new(mac),
+            )));
+        }
     } else {
-        create(index, &name, record.mac).await?;
-        ensure!(
-            observed_mac(&name).await? == Some(record.mac),
-            "driver did not preserve virtual AP identity"
-        );
+        let profile = super::driver::detect(parent).await?;
+        let created = create(index, &name, record.mac).await?;
+        // Persist the kernel's creation receipt before reporting a MAC mismatch.
+        // Cleanup can identify that exact object after restart, without adopting
+        // whatever currently occupies its name. An interrupted/uncertain receipt
+        // write retains the original record and may still require operator repair.
+        if profile == super::driver::Profile::Brcmfmac && created.mac != record.mac {
+            persist_creation(root, &mut record, created).await?;
+            let observed = observed_creation(&name).await?;
+            ensure!(
+                matches_creation(&record, &observed),
+                "virtual AP changed before driver MAC correction"
+            );
+            super::driver::set_created_ap_mac(network, &name, record.mac).await?;
+            let corrected = observed_creation(&name).await?;
+            ensure!(
+                corrected.boot_id == observed.boot_id
+                    && corrected.wdev == observed.wdev
+                    && corrected.phy == observed.phy
+                    && corrected.mac == record.mac,
+                "virtual AP changed during driver MAC correction"
+            );
+        } else {
+            record_creation(root, &mut record, created).await?;
+        }
+        let actual = observed_mac(&name).await?;
+        if actual != Some(record.mac) {
+            return Err(conflict(format!(
+                "{name}: virtual AP identity changed after creation; expected MAC {:?}, observed {actual:?}; refusing to use it",
+                record.mac,
+            )));
+        }
     }
     Ok(())
 }
@@ -229,23 +378,36 @@ pub(crate) async fn remove_ap(root: &Path, parent: &str) -> Result<()> {
     };
     let name = ap_name(parent);
     if let Some(mac) = observed_mac(&name).await? {
-        ensure!(
-            mac == record.mac,
-            "{name} ownership changed; refusing to delete it"
-        );
+        let creation_matches = if mac != record.mac && record.created.is_some() {
+            matches_creation(&record, &observed_creation(&name).await?)
+        } else {
+            false
+        };
+        if mac != record.mac && !creation_matches {
+            return Err(conflict(format!(
+                "{name}: virtual AP ownership conflict; expected MAC {}, observed MAC {}; refusing to delete it",
+                traffic_masq_protocol::MacAddr::new(record.mac), traffic_masq_protocol::MacAddr::new(mac),
+            )));
+        }
+        if phy_index(&name).await? != phy_index(parent).await? {
+            return Err(conflict(format!(
+                "{name}: virtual AP is on a different PHY; refusing to delete it"
+            )));
+        }
         let index: u32 =
             tokio::fs::read_to_string(Path::new("/sys/class/net").join(&name).join("ifindex"))
                 .await?
                 .trim()
                 .parse()?;
+        let identity = if creation_matches {
+            Nl80211Attr::Wdev(record.created.as_ref().expect("matched creation").wdev)
+        } else {
+            Nl80211Attr::IfIndex(index)
+        };
         tokio::time::timeout(Duration::from_secs(10), async {
             let (connection, handle, _) = wl_nl80211::new_connection()?;
             let _connection = Connection(tokio::spawn(connection));
-            let mut replies = handle
-                .interface()
-                .delete(vec![Nl80211Attr::IfIndex(index)])
-                .execute()
-                .await;
+            let mut replies = handle.interface().delete(vec![identity]).execute().await;
             while replies.try_next().await?.is_some() {}
             Ok::<_, anyhow::Error>(())
         })
@@ -408,6 +570,141 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn creation_receipt_survives_restart_but_rejects_replaced_objects() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = ap_name("wlan0");
+        let actual = [2, 9, 8, 7, 6, 5];
+        let reply = vec![
+            Nl80211Attr::IfName(name.clone()),
+            Nl80211Attr::Wdev(42),
+            Nl80211Attr::Wiphy(0),
+            Nl80211Attr::Mac(actual),
+        ];
+        let created = CreatedAp::from_reply("boot-a", &name, &reply).unwrap();
+        let mut record = OwnedAp {
+            parent: "wlan0".into(),
+            mac: [2, 1, 2, 3, 4, 5],
+            created: None,
+        };
+        let path = record_path(dir.path(), "wlan0");
+        traffic_masq_atomic_file::ensure_private_dir(path.parent().unwrap(), 0o700).unwrap();
+        let error = record_creation(dir.path(), &mut record, created.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            crate::core::recovery_control::classify(&error),
+            crate::core::recovery_control::FailureKind::Conflict
+        );
+        let reopened = load(dir.path(), "wlan0").await.unwrap().unwrap();
+        assert_ne!(
+            reopened.mac, actual,
+            "simulate a driver ignoring requested MAC"
+        );
+        assert!(matches_creation(&reopened, &created));
+        for changed in [
+            CreatedAp {
+                boot_id: "boot-b".into(),
+                ..created.clone()
+            },
+            CreatedAp {
+                wdev: 43,
+                ..created.clone()
+            },
+            CreatedAp {
+                phy: 1,
+                ..created.clone()
+            },
+            CreatedAp {
+                mac: [2, 0, 0, 0, 0, 0],
+                ..created.clone()
+            },
+        ] {
+            assert!(!matches_creation(&reopened, &changed));
+        }
+        let legacy: OwnedAp =
+            serde_json::from_value(serde_json::json!({"parent":"wlan0","mac":[2,1,2,3,4,5]}))
+                .unwrap();
+        assert!(!matches_creation(&legacy, &created));
+        // Legacy readers with deny_unknown_fields fail closed on receipt records.
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Legacy {
+            #[serde(rename = "parent")]
+            _parent: String,
+            #[serde(rename = "mac")]
+            _mac: [u8; 6],
+        }
+        assert!(serde_json::from_slice::<Legacy>(&std::fs::read(path).unwrap()).is_err());
+    }
+
+    #[tokio::test]
+    async fn uncertain_receipt_publication_preserves_evidence_for_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = record_path(dir.path(), "wlan0");
+        traffic_masq_atomic_file::ensure_private_dir(path.parent().unwrap(), 0o700).unwrap();
+        let mut record = OwnedAp {
+            parent: "wlan0".into(),
+            mac: [2, 1, 2, 3, 4, 5],
+            created: None,
+        };
+        traffic_masq_atomic_file::replace_async(
+            &path,
+            &serde_json::to_vec(&record).unwrap(),
+            0o600,
+        )
+        .await
+        .unwrap();
+        let created = CreatedAp {
+            boot_id: "boot-a".into(),
+            wdev: 42,
+            phy: 0,
+            mac: [2, 9, 8, 7, 6, 5],
+        };
+        crate::atomic_file::fail_replacement_and_compensation(&path);
+        let error = record_creation(dir.path(), &mut record, created.clone())
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
+        // Plain replacement reports an I/O error even after publication. It
+        // does not compensate; consume the injector's second pre-write fault
+        // and verify neither error erases the already published receipt.
+        assert!(record_creation(dir.path(), &mut record, created.clone())
+            .await
+            .is_err());
+        let reopened = load(dir.path(), "wlan0").await.unwrap().unwrap();
+        assert_eq!(reopened.mac, [2, 1, 2, 3, 4, 5]);
+        assert!(matches_creation(&reopened, &created));
+    }
+
+    #[test]
+    fn incomplete_creation_reply_cannot_establish_ownership() {
+        let name = ap_name("wlan0");
+        let reply = vec![
+            Nl80211Attr::IfName(name.clone()),
+            Nl80211Attr::Wdev(42),
+            Nl80211Attr::Wiphy(0),
+            Nl80211Attr::Mac([2, 1, 2, 3, 4, 5]),
+        ];
+        for index in 0..reply.len() {
+            let mut incomplete = reply.clone();
+            incomplete.remove(index);
+            assert!(CreatedAp::from_reply("boot-a", &name, &incomplete).is_err());
+        }
+        assert!(CreatedAp::from_reply("boot-a", "foreign", &reply).is_err());
+        let error = conflict("ownership conflict");
+        let diagnostic = crate::core::recovery::diagnostic_from_error(&error)
+            .unwrap()
+            .record();
+        assert_eq!(diagnostic.recovery_code, "TM-REC-102");
+        assert!(!diagnostic.metadata_safe_to_remove);
+        assert!(format!("{error:#}").contains("retry Rollback"));
+        assert_eq!(
+            crate::core::recovery_control::classify(&error),
+            crate::core::recovery_control::FailureKind::Conflict
+        );
+    }
+
+    #[tokio::test]
     async fn ownership_records_survive_restart_and_absent_link_cleanup() {
         let dir = tempfile::tempdir().unwrap();
         let parent = "absent-wifi0";
@@ -416,6 +713,7 @@ mod tests {
         let record = OwnedAp {
             parent: parent.into(),
             mac: [2, 1, 2, 3, 4, 5],
+            created: None,
         };
         traffic_masq_atomic_file::replace_async(
             &path,
@@ -443,6 +741,7 @@ mod tests {
         let record = OwnedAp {
             parent: "other0".into(),
             mac: [2, 1, 2, 3, 4, 5],
+            created: None,
         };
         traffic_masq_atomic_file::replace_async(
             &path,
